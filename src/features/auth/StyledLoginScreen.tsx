@@ -55,7 +55,7 @@ export function StyledLoginScreen() {
         </View>
 
         <View style={styles.formWrap}>
-          <Text style={styles.formTitle}>Welcome Back! 👋</Text>
+          <Text style={styles.formTitle}>Welcome Back!</Text>
           <Text style={styles.formSubTitle}>Sign in with your vendor email and password</Text>
 
           <Field

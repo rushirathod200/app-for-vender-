@@ -19,7 +19,7 @@ import {
 } from '../../api/vendorApi';
 import { useVendorApp } from '../../context/VendorAppContext';
 import { CatalogProduct, MenuItem } from '../../types/vendor';
-import { ActionButton, IconOnlyButton, ModePill, SectionTitle } from '../shared/ui';
+import { ActionButton, IconOnlyButton, SectionTitle } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
 type ProductsMode =
@@ -130,8 +130,6 @@ export function VendorProductsScreen() {
           />
         }
       >
-        <ModePill text="🛵 Vendor — Products" />
-
         <SectionTitle
           title="Products"
           subtitle={
@@ -262,8 +260,6 @@ function EditPriceScreen({
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.content}>
-        <ModePill text="🛵 Vendor — Products" />
-
         <View style={styles.topNavRow}>
           <Pressable style={styles.backBtn} onPress={onBack}>
             <Ionicons name="close" size={20} color="#75757f" />
@@ -397,8 +393,6 @@ function AddProductScreen({
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <ModePill text="🛵 Vendor — Products" />
-
         <View style={styles.topNavRow}>
           <Pressable style={styles.backBtn} onPress={onBack}>
             <Ionicons name="close" size={20} color="#75757f" />

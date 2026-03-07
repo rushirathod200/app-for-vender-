@@ -4,7 +4,7 @@ import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, Vie
 
 import { useVendorApp } from '../../context/VendorAppContext';
 import { VendorDeliveryPartner } from '../../types/vendor';
-import { ActionButton, ModePill, SectionTitle, StatusBadge } from '../shared/ui';
+import { ActionButton, SectionTitle, StatusBadge } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
 type DeliveryMode =
@@ -74,8 +74,6 @@ export function VendorDeliveryPartnersScreen() {
           />
         }
       >
-        <ModePill text="🛵 Vendor — Delivery" />
-
         <SectionTitle
           title="Delivery Boys"
           subtitle={`${deliveryPartners.filter((partner) => partner.partner_active).length} active partners`}
@@ -191,8 +189,6 @@ function DeliveryPartnerForm({
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.content}>
-        <ModePill text="🛵 Vendor — Delivery" />
-
         <View style={styles.topNavRow}>
           <Pressable style={styles.backBtn} onPress={onBack}>
             <Ionicons name="close" size={20} color="#75757f" />

@@ -5,7 +5,7 @@ import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
 import { useVendorApp } from '../../context/VendorAppContext';
 import { resolveVendorDisplayName } from '../../utils/vendor';
-import { ActionButton, ModePill } from '../shared/ui';
+import { ActionButton } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
 export function VendorProfileScreen() {
@@ -68,8 +68,6 @@ export function VendorProfileScreen() {
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <ModePill text="🛵 Vendor — Profile" />
-
         <View style={styles.heroCard}>
           <View style={styles.storeIconWrap}>
             <MaterialCommunityIcons name="storefront-outline" size={38} color="#ffffff" />

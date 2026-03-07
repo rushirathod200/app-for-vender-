@@ -11,7 +11,7 @@ import {
   isSameCalendarDay,
   resolveVendorDisplayName,
 } from '../../utils/vendor';
-import { ModePill, SectionTitle, StatusBadge } from '../shared/ui';
+import { SectionTitle, StatusBadge } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
 interface VendorDashboardScreenProps {
@@ -99,8 +99,6 @@ export function VendorDashboardScreen({ onGoToTab }: VendorDashboardScreenProps)
           />
         }
       >
-        <ModePill text="🛵 Vendor — Dashboard" />
-
         <View style={styles.heroCard}>
           <View style={styles.heroTopRow}>
             <View style={styles.heroTitleWrap}>

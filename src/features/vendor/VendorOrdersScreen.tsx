@@ -20,7 +20,7 @@ import {
   getVendorOrderTransitions,
   groupVendorOrderStatus,
 } from '../../utils/vendor';
-import { ActionButton, ModePill, SectionTitle, SegmentTabs, StatusBadge } from '../shared/ui';
+import { ActionButton, SectionTitle, SegmentTabs, StatusBadge } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
 type OrderTab = 'pending' | 'completed' | 'cancelled';
@@ -82,6 +82,22 @@ export function VendorOrdersScreen() {
     }
   };
 
+  const handleMarkCompleted = async (orderId: number, status: OrderStatus): Promise<void> => {
+    const key = `${orderId}:complete`;
+    setUpdatingKey(key);
+    setActionError(null);
+
+    try {
+      for (const nextStatus of getCompletionPath(status)) {
+        await updateOrderStatus(orderId, nextStatus);
+      }
+    } catch (updateError) {
+      setActionError(updateError instanceof Error ? updateError.message : 'Could not complete order.');
+    } finally {
+      setUpdatingKey(null);
+    }
+  };
+
   const openCancelReasonModal = (orderId: number): void => {
     setCancelTargetOrderId(orderId);
     setCancelReason('');
@@ -134,8 +150,6 @@ export function VendorOrdersScreen() {
           />
         }
       >
-        <ModePill text="🛵 Vendor — Orders" />
-
         <SectionTitle title="Orders" subtitle="Manage current customer orders" />
 
         <SegmentTabs
@@ -152,7 +166,7 @@ export function VendorOrdersScreen() {
 
         {filteredOrders.map((order) => {
           const nextStatuses = getVisibleTransitions(order.status, order.allowed_transitions);
-          const showPendingAction = order.status === 'placed';
+          const showCompleteAction = order.status === 'placed';
 
           return (
             <View key={order.id} style={styles.orderCard}>
@@ -207,13 +221,15 @@ export function VendorOrdersScreen() {
 
               {nextStatuses.length > 0 ? (
                 <View style={styles.actionsRow}>
-                  {showPendingAction ? (
+                  {showCompleteAction ? (
                     <ActionButton
-                      label="Pending"
-                      tone="muted"
+                      label={updatingKey === `${order.id}:complete` ? 'Completing...' : 'Mark Completed'}
+                      tone="success"
                       style={styles.halfAction}
-                      disabled
-                      onPress={() => {}}
+                      disabled={updatingKey !== null}
+                      onPress={() => {
+                        void handleMarkCompleted(order.id, order.status);
+                      }}
                     />
                   ) : null}
                   {nextStatuses.map((status) => {
@@ -342,6 +358,21 @@ function getVisibleTransitions(status: OrderStatus, allowedTransitions: OrderSta
   }
 
   return transitions;
+}
+
+function getCompletionPath(status: OrderStatus): OrderStatus[] {
+  switch (status) {
+    case 'placed':
+      return ['accepted', 'preparing', 'out_for_delivery', 'delivered'];
+    case 'accepted':
+      return ['preparing', 'out_for_delivery', 'delivered'];
+    case 'preparing':
+      return ['out_for_delivery', 'delivered'];
+    case 'out_for_delivery':
+      return ['delivered'];
+    default:
+      return [];
+  }
 }
 
 function labelForTransition(status: OrderStatus): string {

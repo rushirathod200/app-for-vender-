@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useMemo, useState } from 'react';
-import { RefreshControl, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Linking, RefreshControl, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { useAuth } from '../../context/AuthContext';
 import { useDeliveryApp } from '../../context/DeliveryAppContext';
@@ -57,6 +57,20 @@ export function DeliveryOrdersScreen() {
       setActionError(updateError instanceof Error ? updateError.message : 'Could not update delivery.');
     } finally {
       setUpdatingKey(null);
+    }
+  };
+
+  const handleCallCustomer = async (phoneNumber: string | null): Promise<void> => {
+    const normalizedNumber = phoneNumber?.replace(/[^\d+]/g, '') ?? '';
+    if (!normalizedNumber) {
+      setActionError('Customer phone number is not available.');
+      return;
+    }
+
+    try {
+      await Linking.openURL(`tel:${normalizedNumber}`);
+    } catch (callError) {
+      setActionError(callError instanceof Error ? callError.message : 'Could not open the dialer.');
     }
   };
 
@@ -126,7 +140,16 @@ export function DeliveryOrdersScreen() {
 
               <View style={styles.metaRow}>
                 <Ionicons name="call-outline" size={15} color="#8b8b95" />
-                <Text style={styles.metaText}>{order.customer_mobile ?? '--'}</Text>
+                <Pressable
+                  disabled={!order.customer_mobile}
+                  onPress={() => {
+                    void handleCallCustomer(order.customer_mobile);
+                  }}
+                >
+                  <Text style={[styles.metaText, order.customer_mobile ? styles.callText : null]}>
+                    {order.customer_mobile ?? '--'}
+                  </Text>
+                </Pressable>
                 <View style={styles.dotSpacer} />
                 <Text style={styles.timeText}>{formatRelativeTime(order.placed_at)}</Text>
               </View>
@@ -148,6 +171,13 @@ export function DeliveryOrdersScreen() {
                   </Text>
                 ))}
               </View>
+
+              {order.notes ? (
+                <View style={styles.noteWrap}>
+                  <Text style={styles.noteLabel}>Customer note</Text>
+                  <Text style={styles.noteText}>{order.notes}</Text>
+                </View>
+              ) : null}
 
               {order.cancel_reason ? (
                 <View style={styles.cancelReasonWrap}>
@@ -361,6 +391,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
+  callText: {
+    color: tokens.colors.deliveryPrimary,
+    textDecorationLine: 'underline',
+  },
   dotSpacer: {
     flex: 1,
   },
@@ -410,6 +444,27 @@ const styles = StyleSheet.create({
     color: '#4a4a53',
     fontSize: 12,
     fontWeight: '600',
+  },
+  noteWrap: {
+    backgroundColor: '#fff7e8',
+    borderWidth: 1,
+    borderColor: '#ffe1b1',
+    borderRadius: 12,
+    padding: 10,
+    gap: 4,
+  },
+  noteLabel: {
+    color: '#c57a13',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  noteText: {
+    color: '#7a5a2e',
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 17,
   },
   cancelReasonWrap: {
     backgroundColor: '#ffeef0',
