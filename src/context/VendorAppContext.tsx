@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
 import {
+  assignVendorOrderDeliveryPartner,
   createDeliveryPartner,
   fetchAssignedBuildings,
   fetchDeliveryPartners,
@@ -74,6 +75,11 @@ function buildMenuMap(buildings: Building[], menuLists: MenuItem[][]): Record<nu
   }, {});
 }
 
+function getAutoAssignPartnerId(partners: VendorDeliveryPartner[]): number | null {
+  const activePartners = partners.filter((partner) => partner.partner_active && partner.app_access_active);
+  return activePartners.length === 1 ? activePartners[0].id : null;
+}
+
 export function VendorAppProvider({ children }: { children: React.ReactNode }) {
   const { user, isAuthenticated } = useAuth();
 
@@ -103,6 +109,54 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isAuthenticated]);
 
+  const autoAssignOrders = async (
+    sourceOrders: VendorOrder[],
+    sourcePartners: VendorDeliveryPartner[],
+  ): Promise<VendorOrder[]> => {
+    const deliveryUserId = getAutoAssignPartnerId(sourcePartners);
+    if (!deliveryUserId) {
+      return sortVendorOrders(sourceOrders);
+    }
+
+    const unassignedOrders = sourceOrders.filter(
+      (order) =>
+        !order.delivery_partner &&
+        order.status !== 'cancelled' &&
+        order.status !== 'delivered',
+    );
+
+    if (!unassignedOrders.length) {
+      return sortVendorOrders(sourceOrders);
+    }
+
+    const assignmentResults = await Promise.allSettled(
+      unassignedOrders.map((order) => assignVendorOrderDeliveryPartner(order.id, deliveryUserId)),
+    );
+
+    let firstError: string | null = null;
+    const updatedOrders = new Map<number, VendorOrder>();
+
+    assignmentResults.forEach((result, index) => {
+      if (result.status === 'fulfilled' && result.value) {
+        updatedOrders.set(unassignedOrders[index].id, result.value);
+        return;
+      }
+
+      if (!firstError) {
+        firstError =
+          result.status === 'rejected' && result.reason instanceof Error
+            ? result.reason.message
+            : 'Could not auto-assign delivery boy.';
+      }
+    });
+
+    if (firstError) {
+      setError((current) => current ?? firstError);
+    }
+
+    return sortVendorOrders(sourceOrders.map((order) => updatedOrders.get(order.id) ?? order));
+  };
+
   const refreshAll = async (): Promise<void> => {
     setIsLoading(true);
     setError(null);
@@ -117,8 +171,8 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
 
       setProfile(fetchedProfile);
       setBuildings(fetchedBuildings);
-      setOrders(sortVendorOrders(fetchedOrders));
       setDeliveryPartners(fetchedPartners);
+      setOrders(await autoAssignOrders(fetchedOrders, fetchedPartners));
 
       if (fetchedBuildings.length === 0) {
         setSelectedBuildingIdState(null);
@@ -174,7 +228,7 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
 
     try {
       const items = await fetchVendorOrders({});
-      setOrders(sortVendorOrders(items));
+      setOrders(await autoAssignOrders(items, deliveryPartners));
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : 'Could not load orders.';
       setError(message);

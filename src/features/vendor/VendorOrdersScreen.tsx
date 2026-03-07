@@ -1,6 +1,15 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useMemo, useState } from 'react';
-import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Modal,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
 import { useVendorApp } from '../../context/VendorAppContext';
 import { OrderStatus } from '../../types/vendor';
@@ -27,6 +36,9 @@ export function VendorOrdersScreen() {
   const [activeStatus, setActiveStatus] = useState<OrderTab>('pending');
   const [updatingKey, setUpdatingKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [cancelTargetOrderId, setCancelTargetOrderId] = useState<number | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelReasonError, setCancelReasonError] = useState<string | null>(null);
 
   useEffect(() => {
     void refreshOrders();
@@ -46,21 +58,65 @@ export function VendorOrdersScreen() {
     [orders, activeStatus],
   );
 
-  const handleStatusUpdate = async (orderId: number, nextStatus: OrderStatus): Promise<void> => {
+  const cancelTargetOrder = useMemo(
+    () => (cancelTargetOrderId ? orders.find((order) => order.id === cancelTargetOrderId) ?? null : null),
+    [cancelTargetOrderId, orders],
+  );
+
+  const handleStatusUpdate = async (
+    orderId: number,
+    nextStatus: OrderStatus,
+    reason?: string,
+  ): Promise<void> => {
     const key = `${orderId}:${nextStatus}`;
     setUpdatingKey(key);
     setActionError(null);
 
     try {
-      await updateOrderStatus(
-        orderId,
-        nextStatus,
-        nextStatus === 'cancelled' ? 'Cancelled by vendor from app.' : undefined,
-      );
+      await updateOrderStatus(orderId, nextStatus, nextStatus === 'cancelled' ? reason : undefined);
     } catch (updateError) {
       setActionError(updateError instanceof Error ? updateError.message : 'Could not update order.');
+      throw updateError;
     } finally {
       setUpdatingKey(null);
+    }
+  };
+
+  const openCancelReasonModal = (orderId: number): void => {
+    setCancelTargetOrderId(orderId);
+    setCancelReason('');
+    setCancelReasonError(null);
+  };
+
+  const closeCancelReasonModal = (): void => {
+    if (updatingKey) {
+      return;
+    }
+
+    setCancelTargetOrderId(null);
+    setCancelReason('');
+    setCancelReasonError(null);
+  };
+
+  const submitCancelReason = async (): Promise<void> => {
+    if (!cancelTargetOrder) {
+      return;
+    }
+
+    const trimmedReason = cancelReason.trim();
+    if (!trimmedReason) {
+      setCancelReasonError('Enter a cancel reason.');
+      return;
+    }
+
+    setCancelReasonError(null);
+
+    try {
+      await handleStatusUpdate(cancelTargetOrder.id, 'cancelled', trimmedReason);
+      setCancelTargetOrderId(null);
+      setCancelReason('');
+    } catch {
+      // Error state is handled by handleStatusUpdate.
     }
   };
 
@@ -95,15 +151,14 @@ export function VendorOrdersScreen() {
         {filteredOrders.length === 0 ? <Text style={styles.emptyText}>No orders in this tab.</Text> : null}
 
         {filteredOrders.map((order) => {
-          const nextStatuses = order.allowed_transitions.length
-            ? order.allowed_transitions
-            : getVendorOrderTransitions(order.status);
+          const nextStatuses = getVisibleTransitions(order.status, order.allowed_transitions);
+          const showPendingAction = order.status === 'placed';
 
           return (
             <View key={order.id} style={styles.orderCard}>
               <View style={styles.rowBetween}>
                 <Text style={styles.orderId}>{order.order_no}</Text>
-                <StatusBadge label={prettifyStatus(order.status).toUpperCase()} tone={toneForStatus(order.status)} />
+                <StatusBadge label={statusLabelForOrder(order.status)} tone={toneForStatus(order.status)} />
               </View>
 
               <View style={styles.metaRow}>
@@ -129,6 +184,13 @@ export function VendorOrdersScreen() {
                 <Text style={styles.locationText}>{buildVendorOrderLocation(order)}</Text>
               </View>
 
+              {order.notes ? (
+                <View style={styles.noteWrap}>
+                  <Text style={styles.noteLabel}>Customer note</Text>
+                  <Text style={styles.noteText}>{order.notes}</Text>
+                </View>
+              ) : null}
+
               {order.status === 'cancelled' && order.cancel_reason ? (
                 <View style={styles.cancelReasonWrap}>
                   <Text style={styles.cancelReasonLabel}>Cancel reason</Text>
@@ -145,6 +207,15 @@ export function VendorOrdersScreen() {
 
               {nextStatuses.length > 0 ? (
                 <View style={styles.actionsRow}>
+                  {showPendingAction ? (
+                    <ActionButton
+                      label="Pending"
+                      tone="muted"
+                      style={styles.halfAction}
+                      disabled
+                      onPress={() => {}}
+                    />
+                  ) : null}
                   {nextStatuses.map((status) => {
                     const key = `${order.id}:${status}`;
                     return (
@@ -155,10 +226,12 @@ export function VendorOrdersScreen() {
                         style={styles.halfAction}
                         disabled={updatingKey !== null}
                         onPress={() => {
-                          void handleStatusUpdate(
-                            order.id,
-                            status,
-                          );
+                          if (status === 'cancelled') {
+                            openCancelReasonModal(order.id);
+                            return;
+                          }
+
+                          void handleStatusUpdate(order.id, status);
                         }}
                       />
                     );
@@ -169,6 +242,70 @@ export function VendorOrdersScreen() {
           );
         })}
       </ScrollView>
+
+      <Modal
+        visible={!!cancelTargetOrder}
+        animationType="slide"
+        transparent
+        onRequestClose={closeCancelReasonModal}
+      >
+        <View style={styles.modalOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeCancelReasonModal} />
+
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <View style={styles.modalTitleWrap}>
+                <Ionicons name="alert-circle-outline" size={22} color={tokens.colors.danger} />
+                <Text style={styles.modalTitle}>Cancel Order</Text>
+              </View>
+
+              <Pressable style={styles.closeModalButton} onPress={closeCancelReasonModal} disabled={!!updatingKey}>
+                <Ionicons name="close" size={18} color="#7f7f89" />
+              </Pressable>
+            </View>
+
+            <Text style={styles.modalPrompt}>
+              {cancelTargetOrder ? `Why are you cancelling ${cancelTargetOrder.order_no}?` : 'Why are you cancelling this order?'}
+            </Text>
+
+            <TextInput
+              value={cancelReason}
+              onChangeText={(value) => {
+                setCancelReason(value);
+                if (cancelReasonError) {
+                  setCancelReasonError(null);
+                }
+              }}
+              placeholder="Enter cancel reason"
+              placeholderTextColor="#9a9aa3"
+              multiline
+              style={styles.reasonInput}
+              textAlignVertical="top"
+            />
+
+            {cancelReasonError ? <Text style={styles.errorText}>{cancelReasonError}</Text> : null}
+
+            <View style={styles.modalActionsRow}>
+              <ActionButton
+                label="Back"
+                tone="muted"
+                style={styles.halfAction}
+                disabled={!!updatingKey}
+                onPress={closeCancelReasonModal}
+              />
+              <ActionButton
+                label={updatingKey === `${cancelTargetOrder?.id}:cancelled` ? 'Cancelling...' : 'Cancel Order'}
+                tone="danger"
+                style={styles.halfAction}
+                disabled={!!updatingKey}
+                onPress={() => {
+                  void submitCancelReason();
+                }}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -187,6 +324,24 @@ function toneForStatus(status: OrderStatus): 'orange' | 'green' | 'red' | 'gray'
   }
 
   return 'orange';
+}
+
+function statusLabelForOrder(status: OrderStatus): string {
+  if (status === 'placed') {
+    return 'PENDING';
+  }
+
+  return prettifyStatus(status).toUpperCase();
+}
+
+function getVisibleTransitions(status: OrderStatus, allowedTransitions: OrderStatus[]): OrderStatus[] {
+  const transitions = allowedTransitions.length ? allowedTransitions : getVendorOrderTransitions(status);
+
+  if (status === 'placed') {
+    return transitions.filter((entry) => entry === 'cancelled');
+  }
+
+  return transitions;
 }
 
 function labelForTransition(status: OrderStatus): string {
@@ -294,6 +449,27 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     flex: 1,
   },
+  noteWrap: {
+    backgroundColor: '#fff7e8',
+    borderWidth: 1,
+    borderColor: '#ffe1b1',
+    borderRadius: 12,
+    padding: 10,
+    gap: 4,
+  },
+  noteLabel: {
+    color: '#c57a13',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  noteText: {
+    color: '#7a5a2e',
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 17,
+  },
   cancelReasonWrap: {
     backgroundColor: '#ffeef0',
     borderWidth: 1,
@@ -342,5 +518,64 @@ const styles = StyleSheet.create({
   halfAction: {
     flex: 1,
     minWidth: 140,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(14,16,23,0.52)',
+    justifyContent: 'flex-end',
+  },
+  modalSheet: {
+    backgroundColor: '#f8f8f9',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    borderColor: '#e7e7eb',
+    padding: 16,
+    gap: 12,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  modalTitleWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  modalTitle: {
+    color: '#222329',
+    fontSize: 20,
+    fontWeight: '900',
+  },
+  closeModalButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: '#ececef',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalPrompt: {
+    color: '#6d6d77',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  reasonInput: {
+    minHeight: 96,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e4e4ea',
+    backgroundColor: '#f1f1f4',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    color: '#232328',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  modalActionsRow: {
+    flexDirection: 'row',
+    gap: 8,
   },
 });

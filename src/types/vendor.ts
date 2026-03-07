@@ -53,6 +53,13 @@ export interface VendorOrderItem {
   line_total: number;
 }
 
+export interface AssignedDeliveryPartner {
+  id: number;
+  name: string | null;
+  email: string | null;
+  mobile: string | null;
+}
+
 export interface VendorOrder {
   id: number;
   order_no: string;
@@ -68,6 +75,7 @@ export interface VendorOrder {
   office_no: string | null;
   customer_name: string | null;
   customer_mobile: string | null;
+  delivery_partner: AssignedDeliveryPartner | null;
   allowed_transitions: OrderStatus[];
   items: VendorOrderItem[];
 }

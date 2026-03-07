@@ -1,5 +1,6 @@
 import { API_BASE_URL, API_ENDPOINTS } from '../config/api';
 import {
+  AssignedDeliveryPartner,
   Building,
   CatalogProduct,
   DeliveryPartnerFilter,
@@ -156,9 +157,19 @@ function normalizeOrder(entry: unknown): VendorOrder | null {
   const building = isRecord(entry.building) ? entry.building : null;
   const office = isRecord(entry.office) ? entry.office : null;
   const user = isRecord(entry.user) ? entry.user : null;
+  const deliveryPartner = isRecord(entry.delivery_partner) ? entry.delivery_partner : null;
   const allowedTransitions = asArray(entry.allowed_transitions)
     .map((status) => toStringValue(status, '') as OrderStatus)
     .filter((status): status is OrderStatus => Boolean(status));
+  const normalizedDeliveryPartner: AssignedDeliveryPartner | null =
+    deliveryPartner && toNumberValue(deliveryPartner.id, 0)
+      ? {
+          id: toNumberValue(deliveryPartner.id, 0),
+          name: toNullableString(deliveryPartner.name),
+          email: toNullableString(deliveryPartner.email),
+          mobile: toNullableString(deliveryPartner.mobile),
+        }
+      : null;
 
   return {
     id,
@@ -175,6 +186,7 @@ function normalizeOrder(entry: unknown): VendorOrder | null {
     office_no: office ? toNullableString(office.office_no) : null,
     customer_name: user ? toNullableString(user.name) : null,
     customer_mobile: user ? toNullableString(user.mobile) : null,
+    delivery_partner: normalizedDeliveryPartner,
     allowed_transitions: allowedTransitions,
     items,
   };
@@ -340,6 +352,18 @@ export async function updateVendorOrderStatus(
   const payload = await apiClient.patch<unknown>(`${API_ENDPOINTS.vendorOrders}/${orderId}/status`, {
     status,
     ...(cancelReason ? { cancel_reason: cancelReason } : {}),
+  });
+
+  const data = extractDataEnvelope(payload);
+  return normalizeOrder(data);
+}
+
+export async function assignVendorOrderDeliveryPartner(
+  orderId: number,
+  deliveryUserId: number | null,
+): Promise<VendorOrder | null> {
+  const payload = await apiClient.patch<unknown>(`${API_ENDPOINTS.vendorOrders}/${orderId}/delivery-partner`, {
+    delivery_user_id: deliveryUserId,
   });
 
   const data = extractDataEnvelope(payload);
