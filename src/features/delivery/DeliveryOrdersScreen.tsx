@@ -1,6 +1,16 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Linking, RefreshControl, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Linking,
+  Modal,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
 import { useAuth } from '../../context/AuthContext';
 import { useDeliveryApp } from '../../context/DeliveryAppContext';
@@ -43,6 +53,9 @@ export function DeliveryOrdersScreen() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [notificationsVisible, setNotificationsVisible] = useState(false);
   const [highlightedOrderId, setHighlightedOrderId] = useState<number | null>(null);
+  const [cancelTargetOrderId, setCancelTargetOrderId] = useState<number | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelReasonError, setCancelReasonError] = useState<string | null>(null);
 
   useEffect(() => {
     void refreshAll();
@@ -62,17 +75,65 @@ export function DeliveryOrdersScreen() {
     [orders],
   );
 
-  const handleMarkCompleted = async (orderId: number, status: OrderStatus): Promise<void> => {
+  const cancelTargetOrder = useMemo(
+    () => (cancelTargetOrderId ? orders.find((order) => order.id === cancelTargetOrderId) ?? null : null),
+    [cancelTargetOrderId, orders],
+  );
+
+  const handleMarkCompleted = async (orderId: number): Promise<void> => {
     const key = `${orderId}:complete`;
     setUpdatingKey(key);
     setActionError(null);
 
     try {
-      for (const nextStatus of getDeliveryCompletionPath(status)) {
-        await updateOrderStatus(orderId, nextStatus);
-      }
+      await updateOrderStatus(orderId, 'delivered');
     } catch (updateError) {
       setActionError(updateError instanceof Error ? updateError.message : 'Could not complete delivery.');
+    } finally {
+      setUpdatingKey(null);
+    }
+  };
+
+  const openCancelReasonModal = (orderId: number): void => {
+    setCancelTargetOrderId(orderId);
+    setCancelReason('');
+    setCancelReasonError(null);
+  };
+
+  const closeCancelReasonModal = (): void => {
+    if (updatingKey) {
+      return;
+    }
+
+    setCancelTargetOrderId(null);
+    setCancelReason('');
+    setCancelReasonError(null);
+  };
+
+  const submitCancelReason = async (): Promise<void> => {
+    if (!cancelTargetOrder) {
+      return;
+    }
+
+    const trimmedReason = cancelReason.trim();
+    if (!trimmedReason) {
+      setCancelReasonError('Enter a cancel reason.');
+      return;
+    }
+
+    const key = `${cancelTargetOrder.id}:cancelled`;
+    setUpdatingKey(key);
+    setActionError(null);
+    setCancelReasonError(null);
+
+    try {
+      await updateOrderStatus(cancelTargetOrder.id, 'cancelled', trimmedReason);
+      setCancelTargetOrderId(null);
+      setCancelReason('');
+    } catch (updateError) {
+      const message = updateError instanceof Error ? updateError.message : 'Could not cancel delivery.';
+      setActionError(message);
+      setCancelReasonError(message);
     } finally {
       setUpdatingKey(null);
     }
@@ -169,9 +230,10 @@ export function DeliveryOrdersScreen() {
 
         {filteredOrders.map((order) => {
           const nextStatuses = order.allowed_transitions.length
-            ? order.allowed_transitions.filter((status) => status === 'out_for_delivery' || status === 'delivered')
+            ? order.allowed_transitions
             : getDeliveryTransitions(order.status);
-          const showCompleteAction = order.status === 'preparing' || order.status === 'out_for_delivery';
+          const showCompleteAction = nextStatuses.includes('delivered');
+          const canCancel = nextStatuses.includes('cancelled');
 
           return (
             <View
@@ -241,7 +303,7 @@ export function DeliveryOrdersScreen() {
                 </Text>
               </View>
 
-              {nextStatuses.length > 0 ? (
+              {showCompleteAction || canCancel ? (
                 <View style={styles.actionsRow}>
                   {showCompleteAction ? (
                     <ActionButton
@@ -250,7 +312,18 @@ export function DeliveryOrdersScreen() {
                       style={styles.mainAction}
                       disabled={updatingKey !== null}
                       onPress={() => {
-                        void handleMarkCompleted(order.id, order.status);
+                        void handleMarkCompleted(order.id);
+                      }}
+                    />
+                  ) : null}
+                  {canCancel ? (
+                    <ActionButton
+                      label={updatingKey === `${order.id}:cancelled` ? 'Cancelling...' : 'Cancel Order'}
+                      tone="danger"
+                      style={styles.mainAction}
+                      disabled={updatingKey !== null}
+                      onPress={() => {
+                        openCancelReasonModal(order.id);
                       }}
                     />
                   ) : null}
@@ -277,6 +350,69 @@ export function DeliveryOrdersScreen() {
           void handleNotificationOpen(notification.id, notification.order_id);
         }}
       />
+      <Modal
+        visible={!!cancelTargetOrder}
+        animationType="slide"
+        transparent
+        onRequestClose={closeCancelReasonModal}
+      >
+        <View style={styles.modalOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeCancelReasonModal} />
+
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <View style={styles.modalTitleWrap}>
+                <Ionicons name="alert-circle-outline" size={22} color={tokens.colors.danger} />
+                <Text style={styles.modalTitle}>Cancel Order</Text>
+              </View>
+
+              <Pressable style={styles.closeModalButton} onPress={closeCancelReasonModal} disabled={!!updatingKey}>
+                <Ionicons name="close" size={18} color="#7f7f89" />
+              </Pressable>
+            </View>
+
+            <Text style={styles.modalPrompt}>
+              {cancelTargetOrder ? `Why are you cancelling ${cancelTargetOrder.order_no}?` : 'Why are you cancelling this order?'}
+            </Text>
+
+            <TextInput
+              value={cancelReason}
+              onChangeText={(value) => {
+                setCancelReason(value);
+                if (cancelReasonError) {
+                  setCancelReasonError(null);
+                }
+              }}
+              placeholder="Enter cancel reason"
+              placeholderTextColor="#9a9aa3"
+              multiline
+              style={styles.reasonInput}
+              textAlignVertical="top"
+            />
+
+            {cancelReasonError ? <Text style={styles.errorText}>{cancelReasonError}</Text> : null}
+
+            <View style={styles.modalActionsRow}>
+              <ActionButton
+                label="Back"
+                tone="muted"
+                style={styles.mainAction}
+                disabled={!!updatingKey}
+                onPress={closeCancelReasonModal}
+              />
+              <ActionButton
+                label={updatingKey === `${cancelTargetOrder?.id}:cancelled` ? 'Cancelling...' : 'Cancel Order'}
+                tone="danger"
+                style={styles.mainAction}
+                disabled={!!updatingKey}
+                onPress={() => {
+                  void submitCancelReason();
+                }}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -294,27 +430,11 @@ function groupDeliveryOrderStatus(status: OrderStatus): DeliveryTab {
 }
 
 function getDeliveryTransitions(status: OrderStatus): OrderStatus[] {
-  if (status === 'preparing') {
-    return ['out_for_delivery'];
+  if (status === 'delivered' || status === 'cancelled') {
+    return [];
   }
 
-  if (status === 'out_for_delivery') {
-    return ['delivered'];
-  }
-
-  return [];
-}
-
-function getDeliveryCompletionPath(status: OrderStatus): OrderStatus[] {
-  if (status === 'preparing') {
-    return ['out_for_delivery', 'delivered'];
-  }
-
-  if (status === 'out_for_delivery') {
-    return ['delivered'];
-  }
-
-  return [];
+  return ['delivered', 'cancelled'];
 }
 
 function deliveryStatusLabel(status: OrderStatus): string {
@@ -611,5 +731,64 @@ const styles = StyleSheet.create({
   mainAction: {
     flex: 1,
     minWidth: 160,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(14,16,23,0.52)',
+    justifyContent: 'flex-end',
+  },
+  modalSheet: {
+    backgroundColor: '#f8f8f9',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    borderColor: '#e7e7eb',
+    padding: 16,
+    gap: 12,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  modalTitleWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  modalTitle: {
+    color: '#222329',
+    fontSize: 20,
+    fontWeight: '900',
+  },
+  closeModalButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: '#ececef',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalPrompt: {
+    color: '#6d6d77',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  reasonInput: {
+    minHeight: 96,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e4e4ea',
+    backgroundColor: '#f1f1f4',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    color: '#232328',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  modalActionsRow: {
+    flexDirection: 'row',
+    gap: 8,
   },
 });

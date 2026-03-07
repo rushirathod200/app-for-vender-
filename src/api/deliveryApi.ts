@@ -150,9 +150,11 @@ export async function fetchDeliveryOrders(params?: {
 export async function updateDeliveryOrderStatus(
   orderId: number,
   status: OrderStatus,
+  cancelReason?: string,
 ): Promise<DeliveryOrder | null> {
   const payload = await apiClient.patch<unknown>(`${API_ENDPOINTS.deliveryOrders}/${orderId}/status`, {
     status,
+    ...(cancelReason ? { cancel_reason: cancelReason } : {}),
   });
 
   const data = extractDataEnvelope(payload);

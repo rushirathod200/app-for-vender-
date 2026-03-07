@@ -24,7 +24,7 @@ interface DeliveryAppContextValue {
   refreshOrders: () => Promise<void>;
   refreshNotifications: () => Promise<void>;
   markNotificationRead: (notificationId: string) => Promise<void>;
-  updateOrderStatus: (orderId: number, status: OrderStatus) => Promise<void>;
+  updateOrderStatus: (orderId: number, status: OrderStatus, cancelReason?: string) => Promise<void>;
 }
 
 const DeliveryAppContext = createContext<DeliveryAppContextValue | undefined>(undefined);
@@ -154,7 +154,11 @@ export function DeliveryAppProvider({ children }: { children: React.ReactNode })
     }
   };
 
-  const updateOrderStatus = async (orderId: number, status: OrderStatus): Promise<void> => {
+  const updateOrderStatus = async (
+    orderId: number,
+    status: OrderStatus,
+    cancelReason?: string,
+  ): Promise<void> => {
     const previousOrders = orders;
 
     setOrders((current) =>
@@ -164,6 +168,7 @@ export function DeliveryAppProvider({ children }: { children: React.ReactNode })
             ? {
                 ...order,
                 status,
+                cancel_reason: status === 'cancelled' ? (cancelReason ?? order.cancel_reason ?? null) : null,
                 allowed_transitions: [],
               }
             : order,
@@ -172,7 +177,7 @@ export function DeliveryAppProvider({ children }: { children: React.ReactNode })
     );
 
     try {
-      const updated = await updateDeliveryOrderStatus(orderId, status);
+      const updated = await updateDeliveryOrderStatus(orderId, status, cancelReason);
       if (updated) {
         setOrders((current) =>
           sortDeliveryOrders(current.map((order) => (order.id === orderId ? updated : order))),
