@@ -8,7 +8,7 @@ import { DeliveryOrder } from '../../types/delivery';
 import { OrderStatus } from '../../types/vendor';
 import { prettifyStatus } from '../../utils/format';
 import { formatRelativeTime } from '../../utils/vendor';
-import { ActionButton, ModePill, SegmentTabs, StatusBadge } from '../shared/ui';
+import { ActionButton, SegmentTabs, StatusBadge } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
 type DeliveryTab = 'pending' | 'completed' | 'cancelled';
@@ -46,15 +46,17 @@ export function DeliveryOrdersScreen() {
     [orders],
   );
 
-  const handleStatusUpdate = async (orderId: number, nextStatus: OrderStatus): Promise<void> => {
-    const key = `${orderId}:${nextStatus}`;
+  const handleMarkCompleted = async (orderId: number, status: OrderStatus): Promise<void> => {
+    const key = `${orderId}:complete`;
     setUpdatingKey(key);
     setActionError(null);
 
     try {
-      await updateOrderStatus(orderId, nextStatus);
+      for (const nextStatus of getDeliveryCompletionPath(status)) {
+        await updateOrderStatus(orderId, nextStatus);
+      }
     } catch (updateError) {
-      setActionError(updateError instanceof Error ? updateError.message : 'Could not update delivery.');
+      setActionError(updateError instanceof Error ? updateError.message : 'Could not complete delivery.');
     } finally {
       setUpdatingKey(null);
     }
@@ -88,8 +90,6 @@ export function DeliveryOrdersScreen() {
           />
         }
       >
-        <ModePill text="🛵 Delivery Partner — Orders" />
-
         <View style={styles.heroCard}>
           <View style={styles.topRow}>
             <View style={styles.titleWrap}>
@@ -127,6 +127,7 @@ export function DeliveryOrdersScreen() {
           const nextStatuses = order.allowed_transitions.length
             ? order.allowed_transitions.filter((status) => status === 'out_for_delivery' || status === 'delivered')
             : getDeliveryTransitions(order.status);
+          const showCompleteAction = order.status === 'preparing' || order.status === 'out_for_delivery';
 
           return (
             <View key={order.id} style={styles.orderCard}>
@@ -195,22 +196,17 @@ export function DeliveryOrdersScreen() {
 
               {nextStatuses.length > 0 ? (
                 <View style={styles.actionsRow}>
-                  {nextStatuses.map((status) => {
-                    const key = `${order.id}:${status}`;
-
-                    return (
-                      <ActionButton
-                        key={key}
-                        label={deliveryActionLabel(status)}
-                        tone={status === 'delivered' ? 'success' : 'delivery'}
-                        style={styles.mainAction}
-                        disabled={updatingKey !== null}
-                        onPress={() => {
-                          void handleStatusUpdate(order.id, status);
-                        }}
-                      />
-                    );
-                  })}
+                  {showCompleteAction ? (
+                    <ActionButton
+                      label={updatingKey === `${order.id}:complete` ? 'Completing...' : 'Mark Completed'}
+                      tone="success"
+                      style={styles.mainAction}
+                      disabled={updatingKey !== null}
+                      onPress={() => {
+                        void handleMarkCompleted(order.id, order.status);
+                      }}
+                    />
+                  ) : null}
                 </View>
               ) : null}
             </View>
@@ -245,16 +241,16 @@ function getDeliveryTransitions(status: OrderStatus): OrderStatus[] {
   return [];
 }
 
-function deliveryActionLabel(status: OrderStatus): string {
+function getDeliveryCompletionPath(status: OrderStatus): OrderStatus[] {
+  if (status === 'preparing') {
+    return ['out_for_delivery', 'delivered'];
+  }
+
   if (status === 'out_for_delivery') {
-    return 'Start Delivery';
+    return ['delivered'];
   }
 
-  if (status === 'delivered') {
-    return 'Mark Delivered';
-  }
-
-  return prettifyStatus(status);
+  return [];
 }
 
 function deliveryStatusLabel(status: OrderStatus): string {
