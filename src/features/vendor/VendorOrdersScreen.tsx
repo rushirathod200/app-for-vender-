@@ -31,7 +31,11 @@ const orderTabs: Array<{ key: OrderTab; label: string }> = [
   { key: 'cancelled', label: 'Cancelled' },
 ];
 
-export function VendorOrdersScreen() {
+interface VendorOrdersScreenProps {
+  highlightedOrderId?: number | null;
+}
+
+export function VendorOrdersScreen({ highlightedOrderId = null }: VendorOrdersScreenProps) {
   const { orders, ordersLoading, error, refreshOrders, updateOrderStatus } = useVendorApp();
   const [activeStatus, setActiveStatus] = useState<OrderTab>('pending');
   const [updatingKey, setUpdatingKey] = useState<string | null>(null);
@@ -169,7 +173,13 @@ export function VendorOrdersScreen() {
           const showCompleteAction = order.status === 'placed';
 
           return (
-            <View key={order.id} style={styles.orderCard}>
+            <View
+              key={order.id}
+              style={[
+                styles.orderCard,
+                highlightedOrderId === order.id ? styles.highlightedOrderCard : null,
+              ]}
+            >
               <View style={styles.rowBetween}>
                 <Text style={styles.orderId}>{order.order_no}</Text>
                 <StatusBadge label={statusLabelForOrder(order.status)} tone={toneForStatus(order.status)} />
@@ -420,6 +430,10 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 12,
     gap: 9,
+  },
+  highlightedOrderCard: {
+    borderColor: '#ffd0ad',
+    backgroundColor: '#fff7f0',
   },
   rowBetween: {
     flexDirection: 'row',

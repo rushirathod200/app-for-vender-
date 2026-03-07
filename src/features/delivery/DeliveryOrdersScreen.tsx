@@ -8,6 +8,7 @@ import { DeliveryOrder } from '../../types/delivery';
 import { OrderStatus } from '../../types/vendor';
 import { prettifyStatus } from '../../utils/format';
 import { formatRelativeTime } from '../../utils/vendor';
+import { NotificationCenterSheet } from '../shared/NotificationCenterSheet';
 import { ActionButton, SegmentTabs, StatusBadge } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
@@ -21,12 +22,27 @@ const tabs: Array<{ key: DeliveryTab; label: string }> = [
 
 export function DeliveryOrdersScreen() {
   const { logout } = useAuth();
-  const { profile, orders, isLoading, ordersLoading, error, refreshAll, refreshOrders, updateOrderStatus } =
-    useDeliveryApp();
+  const {
+    profile,
+    orders,
+    notifications,
+    unreadNotificationCount,
+    isLoading,
+    ordersLoading,
+    notificationsLoading,
+    error,
+    refreshAll,
+    refreshOrders,
+    refreshNotifications,
+    markNotificationRead,
+    updateOrderStatus,
+  } = useDeliveryApp();
 
   const [activeTab, setActiveTab] = useState<DeliveryTab>('pending');
   const [updatingKey, setUpdatingKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [notificationsVisible, setNotificationsVisible] = useState(false);
+  const [highlightedOrderId, setHighlightedOrderId] = useState<number | null>(null);
 
   useEffect(() => {
     void refreshAll();
@@ -76,6 +92,18 @@ export function DeliveryOrdersScreen() {
     }
   };
 
+  const handleNotificationOpen = async (notificationId: string, orderId: number | null): Promise<void> => {
+    try {
+      await markNotificationRead(notificationId);
+    } catch {
+      return;
+    }
+
+    await refreshOrders();
+    setHighlightedOrderId(orderId);
+    setNotificationsVisible(false);
+  };
+
   return (
     <View style={styles.root}>
       <ScrollView
@@ -100,15 +128,31 @@ export function DeliveryOrdersScreen() {
               </Text>
             </View>
 
-            <Pressable
-              onPress={() => {
-                logout();
-              }}
-              style={styles.logoutButton}
-            >
-              <Ionicons name="log-out-outline" size={16} color="#ffffff" />
-              <Text style={styles.logoutText}>Logout</Text>
-            </Pressable>
+            <View style={styles.headerActions}>
+              <Pressable
+                onPress={() => {
+                  setNotificationsVisible(true);
+                }}
+                style={styles.notificationButton}
+              >
+                <Ionicons name="notifications-outline" size={18} color="#ffffff" />
+                {unreadNotificationCount > 0 ? (
+                  <View style={styles.notificationBadge}>
+                    <Text style={styles.notificationBadgeText}>{Math.min(unreadNotificationCount, 9)}</Text>
+                  </View>
+                ) : null}
+              </Pressable>
+
+              <Pressable
+                onPress={() => {
+                  logout();
+                }}
+                style={styles.logoutButton}
+              >
+                <Ionicons name="log-out-outline" size={16} color="#ffffff" />
+                <Text style={styles.logoutText}>Logout</Text>
+              </Pressable>
+            </View>
           </View>
 
           <SegmentTabs
@@ -130,7 +174,10 @@ export function DeliveryOrdersScreen() {
           const showCompleteAction = order.status === 'preparing' || order.status === 'out_for_delivery';
 
           return (
-            <View key={order.id} style={styles.orderCard}>
+            <View
+              key={order.id}
+              style={[styles.orderCard, highlightedOrderId === order.id ? styles.highlightedOrderCard : null]}
+            >
               <View style={styles.rowBetween}>
                 <Text style={styles.orderId}>{order.order_no}</Text>
                 <StatusBadge
@@ -213,6 +260,23 @@ export function DeliveryOrdersScreen() {
           );
         })}
       </ScrollView>
+
+      <NotificationCenterSheet
+        accentColor={tokens.colors.deliveryPrimary}
+        visible={notificationsVisible}
+        title="Notifications"
+        subtitle="Assigned deliveries and status updates"
+        notifications={notifications}
+        unreadCount={unreadNotificationCount}
+        isLoading={notificationsLoading}
+        onClose={() => setNotificationsVisible(false)}
+        onRefresh={() => {
+          void refreshNotifications();
+        }}
+        onSelectNotification={(notification) => {
+          void handleNotificationOpen(notification.id, notification.order_id);
+        }}
+      />
     </View>
   );
 }
@@ -314,7 +378,14 @@ const styles = StyleSheet.create({
   },
   titleWrap: {
     flex: 1,
-    paddingRight: 10,
+    paddingRight: 12,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginLeft: 8,
   },
   roleText: {
     color: '#d8ddff',
@@ -341,6 +412,32 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 5,
   },
+  notificationButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  notificationBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 17,
+    height: 17,
+    borderRadius: 999,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  notificationBadgeText: {
+    color: tokens.colors.deliveryPrimary,
+    fontSize: 10,
+    fontWeight: '900',
+  },
   logoutText: {
     color: '#ffffff',
     fontSize: 12,
@@ -364,6 +461,10 @@ const styles = StyleSheet.create({
     borderColor: '#ededf2',
     padding: 11,
     gap: 9,
+  },
+  highlightedOrderCard: {
+    borderColor: '#bac2ff',
+    backgroundColor: '#f4f6ff',
   },
   rowBetween: {
     flexDirection: 'row',

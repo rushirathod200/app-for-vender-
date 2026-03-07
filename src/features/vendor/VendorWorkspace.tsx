@@ -13,13 +13,19 @@ import { tokens } from '../shared/tokens';
 
 export function VendorWorkspace() {
   const [activeTab, setActiveTab] = useState<VendorTabKey>('dashboard');
+  const [highlightedOrderId, setHighlightedOrderId] = useState<number | null>(null);
 
   return (
     <VendorAppProvider>
       <SafeAreaView style={styles.root}>
         <View style={styles.mainArea}>
-          {activeTab === 'dashboard' ? <VendorDashboardScreen onGoToTab={setActiveTab} /> : null}
-          {activeTab === 'orders' ? <VendorOrdersScreen /> : null}
+          {activeTab === 'dashboard' ? (
+            <VendorDashboardScreen
+              onGoToTab={setActiveTab}
+              onOpenOrderFromNotification={setHighlightedOrderId}
+            />
+          ) : null}
+          {activeTab === 'orders' ? <VendorOrdersScreen highlightedOrderId={highlightedOrderId} /> : null}
           {activeTab === 'products' ? <VendorProductsScreen /> : null}
           {activeTab === 'delivery' ? <VendorDeliveryPartnersScreen /> : null}
           {activeTab === 'profile' ? <VendorProfileScreen /> : null}

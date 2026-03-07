@@ -22,8 +22,12 @@ export const API_ENDPOINTS = {
   vendorCatalogProducts: '/vendor/catalog-products',
   vendorMenu: '/vendor/menu',
   vendorOrders: '/vendor/orders',
+  vendorNotifications: '/vendor/notifications',
+  vendorNotificationsUnreadCount: '/vendor/notifications/unread-count',
   vendorDeliveryPartners: '/vendor/delivery-partners',
   deliveryMe: '/delivery/me',
   deliveryProfile: '/delivery/profile',
   deliveryOrders: '/delivery/orders',
+  deliveryNotifications: '/delivery/notifications',
+  deliveryNotificationsUnreadCount: '/delivery/notifications/unread-count',
 } as const;

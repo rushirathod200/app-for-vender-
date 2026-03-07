@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { useVendorApp } from '../../context/VendorAppContext';
@@ -11,25 +11,34 @@ import {
   isSameCalendarDay,
   resolveVendorDisplayName,
 } from '../../utils/vendor';
+import { NotificationCenterSheet } from '../shared/NotificationCenterSheet';
 import { SectionTitle, StatusBadge } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
 interface VendorDashboardScreenProps {
   onGoToTab: (tab: VendorTabKey) => void;
+  onOpenOrderFromNotification: (orderId: number | null) => void;
 }
 
-export function VendorDashboardScreen({ onGoToTab }: VendorDashboardScreenProps) {
+export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }: VendorDashboardScreenProps) {
   const {
     profile,
     buildings,
     allProducts,
     orders,
+    notifications,
+    unreadNotificationCount,
+    notificationsLoading,
     deliveryPartners,
     isLoading,
     error,
     refreshAll,
+    refreshNotifications,
+    refreshOrders,
+    markNotificationRead,
     toggleStoreOpen,
   } = useVendorApp();
+  const [notificationsVisible, setNotificationsVisible] = useState(false);
 
   useEffect(() => {
     void refreshAll();
@@ -63,6 +72,19 @@ export function VendorDashboardScreen({ onGoToTab }: VendorDashboardScreenProps)
     () => deliveryPartners.filter((partner) => partner.partner_active && partner.app_access_active),
     [deliveryPartners],
   );
+
+  const handleNotificationOpen = async (notificationId: string, orderId: number | null): Promise<void> => {
+    try {
+      await markNotificationRead(notificationId);
+    } catch {
+      return;
+    }
+
+    await refreshOrders();
+    onOpenOrderFromNotification(orderId);
+    setNotificationsVisible(false);
+    onGoToTab('orders');
+  };
 
   const stats = [
     {
@@ -105,9 +127,14 @@ export function VendorDashboardScreen({ onGoToTab }: VendorDashboardScreenProps)
               <Text style={styles.greeting}>Welcome back</Text>
               <Text style={styles.storeName}>{storeName}</Text>
             </View>
-            <View style={styles.notificationButton}>
+            <Pressable style={styles.notificationButton} onPress={() => setNotificationsVisible(true)}>
               <Ionicons name="notifications-outline" size={20} color="#ffffff" />
-            </View>
+              {unreadNotificationCount > 0 ? (
+                <View style={styles.notificationBadge}>
+                  <Text style={styles.notificationBadgeText}>{Math.min(unreadNotificationCount, 9)}</Text>
+                </View>
+              ) : null}
+            </Pressable>
           </View>
 
           <View style={styles.statusCard}>
@@ -235,6 +262,23 @@ export function VendorDashboardScreen({ onGoToTab }: VendorDashboardScreenProps)
           </View>
         </View>
       </ScrollView>
+
+      <NotificationCenterSheet
+        accentColor={tokens.colors.vendorPrimary}
+        visible={notificationsVisible}
+        title="Notifications"
+        subtitle="New orders and order updates"
+        notifications={notifications}
+        unreadCount={unreadNotificationCount}
+        isLoading={notificationsLoading}
+        onClose={() => setNotificationsVisible(false)}
+        onRefresh={() => {
+          void refreshNotifications();
+        }}
+        onSelectNotification={(notification) => {
+          void handleNotificationOpen(notification.id, notification.order_id);
+        }}
+      />
     </View>
   );
 }
@@ -282,6 +326,24 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.2)',
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
+  },
+  notificationBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 17,
+    height: 17,
+    borderRadius: 999,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  notificationBadgeText: {
+    color: tokens.colors.vendorPrimary,
+    fontSize: 10,
+    fontWeight: '900',
   },
   statusCard: {
     backgroundColor: 'rgba(255,255,255,0.16)',

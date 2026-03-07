@@ -14,8 +14,14 @@ import {
   updateVendorOrderStatus,
   updateVendorProfile,
 } from '../api/vendorApi';
+import {
+  fetchVendorNotifications,
+  fetchVendorUnreadNotificationCount,
+  markVendorNotificationRead,
+} from '../api/notificationsApi';
 import { useAuth } from './AuthContext';
 import { AuthUser } from '../types/auth';
+import { AppNotification } from '../types/notification';
 import {
   Building,
   MenuItem,
@@ -35,15 +41,20 @@ interface VendorAppContextValue {
   products: MenuItem[];
   allProducts: MenuItem[];
   orders: VendorOrder[];
+  notifications: AppNotification[];
+  unreadNotificationCount: number;
   deliveryPartners: VendorDeliveryPartner[];
   isLoading: boolean;
   productsLoading: boolean;
   ordersLoading: boolean;
+  notificationsLoading: boolean;
   deliveryPartnersLoading: boolean;
   error: string | null;
   refreshAll: () => Promise<void>;
   refreshProducts: () => Promise<void>;
   refreshOrders: () => Promise<void>;
+  refreshNotifications: () => Promise<void>;
+  markNotificationRead: (notificationId: string) => Promise<void>;
   refreshDeliveryPartners: () => Promise<void>;
   saveProfile: (input: {
     name: string;
@@ -88,10 +99,13 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
   const [selectedBuildingId, setSelectedBuildingIdState] = useState<number | null>(null);
   const [productsByBuilding, setProductsByBuilding] = useState<Record<number, MenuItem[]>>({});
   const [orders, setOrders] = useState<VendorOrder[]>([]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [deliveryPartners, setDeliveryPartners] = useState<VendorDeliveryPartner[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [productsLoading, setProductsLoading] = useState(false);
   const [ordersLoading, setOrdersLoading] = useState(false);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [deliveryPartnersLoading, setDeliveryPartnersLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -102,6 +116,8 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       setSelectedBuildingIdState(null);
       setProductsByBuilding({});
       setOrders([]);
+      setNotifications([]);
+      setUnreadNotificationCount(0);
       setDeliveryPartners([]);
       setError(null);
       setIsLoading(false);
@@ -162,17 +178,21 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
     setError(null);
 
     try {
-      const [fetchedProfile, fetchedBuildings, fetchedOrders, fetchedPartners] = await Promise.all([
+      const [fetchedProfile, fetchedBuildings, fetchedOrders, fetchedPartners, fetchedNotifications, unreadCount] = await Promise.all([
         fetchVendorProfile(),
         fetchAssignedBuildings(),
         fetchVendorOrders({}),
         fetchDeliveryPartners(),
+        fetchVendorNotifications(),
+        fetchVendorUnreadNotificationCount(),
       ]);
 
       setProfile(fetchedProfile);
       setBuildings(fetchedBuildings);
       setDeliveryPartners(fetchedPartners);
       setOrders(await autoAssignOrders(fetchedOrders, fetchedPartners));
+      setNotifications(fetchedNotifications);
+      setUnreadNotificationCount(unreadCount);
 
       if (fetchedBuildings.length === 0) {
         setSelectedBuildingIdState(null);
@@ -234,6 +254,59 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       setError(message);
     } finally {
       setOrdersLoading(false);
+    }
+  };
+
+  const refreshNotifications = async (): Promise<void> => {
+    setNotificationsLoading(true);
+    setError(null);
+
+    try {
+      const [items, unreadCount] = await Promise.all([
+        fetchVendorNotifications(),
+        fetchVendorUnreadNotificationCount(),
+      ]);
+      setNotifications(items);
+      setUnreadNotificationCount(unreadCount);
+    } catch (loadError) {
+      const message = loadError instanceof Error ? loadError.message : 'Could not load notifications.';
+      setError(message);
+    } finally {
+      setNotificationsLoading(false);
+    }
+  };
+
+  const markNotificationRead = async (notificationId: string): Promise<void> => {
+    const wasUnread = notifications.some(
+      (notification) => notification.id === notificationId && !notification.is_read,
+    );
+
+    setNotifications((current) =>
+      current.map((notification) =>
+        notification.id === notificationId ? { ...notification, is_read: true } : notification,
+      ),
+    );
+    setUnreadNotificationCount((current) => (wasUnread ? Math.max(0, current - 1) : current));
+
+    try {
+      const updated = await markVendorNotificationRead(notificationId);
+      if (!updated) {
+        return;
+      }
+
+      setNotifications((current) =>
+        current.map((notification) => (notification.id === notificationId ? updated : notification)),
+      );
+    } catch (updateError) {
+      setNotifications((current) =>
+        current.map((notification) =>
+          notification.id === notificationId ? { ...notification, is_read: false } : notification,
+        ),
+      );
+      setUnreadNotificationCount((current) => (wasUnread ? current + 1 : current));
+      const message = updateError instanceof Error ? updateError.message : 'Could not update notification.';
+      setError(message);
+      throw updateError;
     }
   };
 
@@ -462,15 +535,20 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       products,
       allProducts,
       orders,
+      notifications,
+      unreadNotificationCount,
       deliveryPartners,
       isLoading,
       productsLoading,
       ordersLoading,
+      notificationsLoading,
       deliveryPartnersLoading,
       error,
       refreshAll,
       refreshProducts,
       refreshOrders,
+      refreshNotifications,
+      markNotificationRead,
       refreshDeliveryPartners,
       saveProfile,
       toggleStoreOpen,
@@ -486,12 +564,15 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       deliveryPartnersLoading,
       error,
       isLoading,
+      notifications,
+      notificationsLoading,
       orders,
       ordersLoading,
       products,
       productsLoading,
       profile,
       selectedBuildingId,
+      unreadNotificationCount,
       user,
     ],
   );
