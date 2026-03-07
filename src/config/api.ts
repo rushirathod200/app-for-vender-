@@ -13,10 +13,17 @@ export const API_BASE_URL =
       : DEFAULT_NATIVE_API_BASE_URL;
 
 export const API_ENDPOINTS = {
-  sendOtp: '/auth/send-otp',
-  verifyOtp: '/auth/verify-otp',
+  authLogin: '/auth/login',
+  authMe: '/auth/me',
+  authLogout: '/auth/logout',
   vendorMe: '/vendor/me',
+  vendorProfile: '/vendor/profile',
   vendorBuildings: '/vendor/buildings',
+  vendorCatalogProducts: '/vendor/catalog-products',
   vendorMenu: '/vendor/menu',
   vendorOrders: '/vendor/orders',
+  vendorDeliveryPartners: '/vendor/delivery-partners',
+  deliveryMe: '/delivery/me',
+  deliveryProfile: '/delivery/profile',
+  deliveryOrders: '/delivery/orders',
 } as const;

@@ -1,5 +1,5 @@
 import { API_ENDPOINTS } from '../config/api';
-import { AuthUser, SendOtpResult, VerifyOtpResult } from '../types/auth';
+import { AuthUser, LoginResult } from '../types/auth';
 import {
   extractDataEnvelope,
   extractMessage,
@@ -9,7 +9,6 @@ import {
   toNullableString,
   toStringValue,
 } from '../utils/parsers';
-import { requestWithFallback } from './requestWithFallback';
 import { apiClient } from './httpClient';
 
 function normalizeAuthUser(payload: unknown): AuthUser | null {
@@ -27,9 +26,12 @@ function normalizeAuthUser(payload: unknown): AuthUser | null {
   return {
     id,
     name: toNullableString(payload.name),
+    email: toNullableString(payload.email),
     mobile,
     role: toStringValue(payload.role, 'vendor'),
     is_active: toBooleanValue(payload.is_active, true),
+    store_open: toBooleanValue(payload.store_open, true),
+    delivery_charge: toNumberValue(payload.delivery_charge, 0),
   };
 }
 
@@ -57,29 +59,16 @@ function extractToken(payload: unknown): string | null {
   );
 }
 
-export async function sendOtp(mobile: string): Promise<SendOtpResult> {
-  const payload = await requestWithFallback<unknown>([
-    () => apiClient.post(API_ENDPOINTS.sendOtp, { mobile }),
-    () => apiClient.post('/otp/send', { mobile }),
-  ]);
-
-  const devOtp = isRecord(payload)
-    ? toNullableString(payload.dev_otp) ??
-      (isRecord(payload.data) ? toNullableString(payload.data.dev_otp) : null) ??
-      undefined
-    : undefined;
-
-  return {
-    message: extractMessage(payload, 'OTP sent successfully.'),
-    devOtp,
-  };
-}
-
-export async function verifyOtp(mobile: string, code: string): Promise<VerifyOtpResult> {
-  const payload = await requestWithFallback<unknown>([
-    () => apiClient.post(API_ENDPOINTS.verifyOtp, { mobile, code }),
-    () => apiClient.post('/otp/verify', { mobile, code }),
-  ]);
+export async function loginWithEmailPassword(input: {
+  email: string;
+  password: string;
+  deviceName?: string;
+}): Promise<LoginResult> {
+  const payload = await apiClient.post<unknown>(API_ENDPOINTS.authLogin, {
+    email: input.email,
+    password: input.password,
+    device_name: input.deviceName ?? 'vendor-app',
+  });
 
   const envelope = extractDataEnvelope(payload);
 
@@ -93,18 +82,14 @@ export async function verifyOtp(mobile: string, code: string): Promise<VerifyOtp
   }
 
   return {
-    message: extractMessage(payload, 'OTP verified successfully.'),
+    message: extractMessage(payload, 'Logged in successfully.'),
     token: extractToken(payload),
     user,
   };
 }
 
 export async function fetchCurrentAuthUser(): Promise<AuthUser | null> {
-  const payload = await requestWithFallback<unknown>([
-    () => apiClient.get(API_ENDPOINTS.vendorMe),
-    () => apiClient.get('/me'),
-  ]);
-
+  const payload = await apiClient.get<unknown>(API_ENDPOINTS.authMe);
   const envelope = extractDataEnvelope(payload);
 
   if (isRecord(envelope)) {
@@ -116,4 +101,8 @@ export async function fetchCurrentAuthUser(): Promise<AuthUser | null> {
   }
 
   return null;
+}
+
+export async function logoutCurrentSession(): Promise<void> {
+  await apiClient.post<unknown>(API_ENDPOINTS.authLogout);
 }

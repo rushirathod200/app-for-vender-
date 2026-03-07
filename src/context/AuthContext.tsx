@@ -1,15 +1,14 @@
 import React, { createContext, useContext, useMemo, useState } from 'react';
 
-import { fetchCurrentAuthUser, sendOtp, verifyOtp } from '../api/authApi';
+import { fetchCurrentAuthUser, loginWithEmailPassword, logoutCurrentSession } from '../api/authApi';
 import { apiClient } from '../api/httpClient';
-import { AuthUser, SendOtpResult } from '../types/auth';
+import { AuthUser } from '../types/auth';
 
 interface AuthContextValue {
   user: AuthUser | null;
   token: string | null;
   isAuthenticated: boolean;
-  sendOtpCode: (mobile: string) => Promise<SendOtpResult>;
-  verifyOtpCode: (mobile: string, code: string) => Promise<void>;
+  login: (input: { email: string; password: string }) => Promise<void>;
   logout: () => void;
 }
 
@@ -19,28 +18,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
 
-  const sendOtpCode = async (mobile: string): Promise<SendOtpResult> => {
-    return sendOtp(mobile);
-  };
-
-  const verifyOtpCode = async (mobile: string, code: string): Promise<void> => {
-    const result = await verifyOtp(mobile, code);
+  const login = async (input: { email: string; password: string }): Promise<void> => {
+    const result = await loginWithEmailPassword(input);
     let resolvedUser = result.user;
 
     if (!resolvedUser) {
       try {
         resolvedUser = await fetchCurrentAuthUser();
       } catch {
-        // Some backends return only token and no user profile endpoint.
+        // Login response may already contain everything the app needs.
       }
     }
 
-    if (resolvedUser && resolvedUser.role !== 'vendor') {
-      throw new Error('This app only allows vendor accounts.');
+    if (!result.token) {
+      throw new Error('Login succeeded but no token was returned by API.');
     }
 
-    if (!resolvedUser && !result.token) {
-      throw new Error('Login succeeded but no user/token was returned by API.');
+    if (!resolvedUser) {
+      throw new Error('Login succeeded but no user was returned by API.');
+    }
+
+    if (resolvedUser.role !== 'vendor' && resolvedUser.role !== 'delivery') {
+      throw new Error('This app only allows vendor or delivery accounts.');
     }
 
     setUser(resolvedUser);
@@ -49,6 +48,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = (): void => {
+    if (token) {
+      void logoutCurrentSession().catch(() => undefined);
+    }
+
     setUser(null);
     setToken(null);
     apiClient.setToken(null);
@@ -58,9 +61,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     () => ({
       user,
       token,
-      isAuthenticated: Boolean(user || token),
-      sendOtpCode,
-      verifyOtpCode,
+      isAuthenticated: Boolean(user && token),
+      login,
       logout,
     }),
     [token, user],

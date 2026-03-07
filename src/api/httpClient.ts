@@ -43,6 +43,10 @@ class HttpClient {
     return this.request<T>(path, { method: 'PATCH', body });
   }
 
+  async delete<T>(path: string, body?: unknown): Promise<T> {
+    return this.request<T>(path, { method: 'DELETE', body });
+  }
+
   private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
     const url = this.buildUrl(path, options.query);
     const method = options.method ?? 'GET';
@@ -121,6 +125,11 @@ class HttpClient {
       }
     }
 
+    const message = extractMessage(payload, '');
+    if (message) {
+      return message;
+    }
+
     if (status === 401) {
       return 'Unauthorized. Please login again.';
     }
@@ -129,7 +138,7 @@ class HttpClient {
       return 'You are not allowed to perform this action.';
     }
 
-    return extractMessage(payload, `Request failed (${status})`);
+    return `Request failed (${status})`;
   }
 }
 

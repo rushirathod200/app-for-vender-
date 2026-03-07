@@ -1,41 +1,58 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { useAppWorkflow } from '../../context/AppWorkflowContext';
+import { useVendorApp } from '../../context/VendorAppContext';
+import { VendorDeliveryPartner } from '../../types/vendor';
 import { ActionButton, ModePill, SectionTitle, StatusBadge } from '../shared/ui';
-import { DeliveryPartner } from '../../types/workflow';
 import { tokens } from '../shared/tokens';
 
 type DeliveryMode =
   | { screen: 'list' }
   | {
       screen: 'form';
-      partnerId?: string;
+      partnerId?: number;
     };
 
 export function VendorDeliveryPartnersScreen() {
-  const { deliveryPartners, toggleDeliveryPartnerStatus, upsertDeliveryPartner } = useAppWorkflow();
+  const {
+    deliveryPartners,
+    deliveryPartnersLoading,
+    error,
+    refreshDeliveryPartners,
+    toggleDeliveryPartnerStatus,
+    upsertDeliveryPartner,
+  } = useVendorApp();
   const [mode, setMode] = useState<DeliveryMode>({ screen: 'list' });
-
-  if (mode.screen === 'form') {
-    const editingPartner = mode.partnerId
+  const [actionError, setActionError] = useState<string | null>(null);
+  const editingPartner =
+    mode.screen === 'form' && mode.partnerId
       ? deliveryPartners.find((partner) => partner.id === mode.partnerId) ?? null
       : null;
 
+  React.useEffect(() => {
+    if (mode.screen === 'form' && mode.partnerId && !editingPartner) {
+      setMode({ screen: 'list' });
+    }
+  }, [editingPartner, mode]);
+
+  if (mode.screen === 'form') {
     return (
       <DeliveryPartnerForm
         title={editingPartner ? 'Edit Delivery Boy' : 'Add Delivery Boy'}
         initialName={editingPartner?.name ?? ''}
         initialEmail={editingPartner?.email ?? ''}
+        initialMobile={editingPartner?.mobile ?? ''}
         submitLabel={editingPartner ? 'Update Delivery Boy' : 'Create Delivery Boy'}
         onBack={() => setMode({ screen: 'list' })}
-        onSubmit={(payload) => {
-          upsertDeliveryPartner({
+        onSubmit={async (payload) => {
+          await upsertDeliveryPartner({
             id: editingPartner?.id,
             name: payload.name,
             email: payload.email,
+            mobile: payload.mobile,
             password: payload.password,
+            is_active: true,
           });
           setMode({ screen: 'list' });
         }}
@@ -45,20 +62,39 @@ export function VendorDeliveryPartnersScreen() {
 
   return (
     <View style={styles.root}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={deliveryPartnersLoading}
+            onRefresh={() => {
+              void refreshDeliveryPartners();
+            }}
+          />
+        }
+      >
         <ModePill text="🛵 Vendor — Delivery" />
 
         <SectionTitle
           title="Delivery Boys"
-          subtitle={`${deliveryPartners.filter((partner) => partner.isActive).length} active partners`}
+          subtitle={`${deliveryPartners.filter((partner) => partner.partner_active).length} active partners`}
         />
+
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+        {actionError ? <Text style={styles.errorText}>{actionError}</Text> : null}
 
         {deliveryPartners.map((partner) => (
           <PartnerCard
             key={partner.id}
             partner={partner}
             onEdit={() => setMode({ screen: 'form', partnerId: partner.id })}
-            onToggleStatus={() => toggleDeliveryPartnerStatus(partner.id)}
+            onToggleStatus={() => {
+              setActionError(null);
+              void toggleDeliveryPartnerStatus(partner.id).catch((toggleError) => {
+                setActionError(toggleError instanceof Error ? toggleError.message : 'Could not update delivery partner.');
+              });
+            }}
           />
         ))}
       </ScrollView>
@@ -75,41 +111,42 @@ function PartnerCard({
   onEdit,
   onToggleStatus,
 }: {
-  partner: DeliveryPartner;
+  partner: VendorDeliveryPartner;
   onEdit: () => void;
   onToggleStatus: () => void;
 }) {
   const firstLetter = partner.name.charAt(0).toUpperCase();
+  const isActive = partner.partner_active && partner.app_access_active;
 
   return (
-    <View style={[styles.partnerCard, !partner.isActive ? styles.partnerCardInactive : null]}>
+    <View style={[styles.partnerCard, !isActive ? styles.partnerCardInactive : null]}>
       <View style={styles.partnerHeaderRow}>
         <View style={styles.partnerMain}>
-          <View style={[styles.avatarCircle, !partner.isActive ? styles.avatarInactive : null]}>
+          <View style={[styles.avatarCircle, !isActive ? styles.avatarInactive : null]}>
             <Text style={styles.avatarLetter}>{firstLetter}</Text>
           </View>
 
           <View>
             <Text numberOfLines={1} style={styles.partnerName}>{partner.name}</Text>
-            <Text numberOfLines={1} style={styles.partnerEmail}>{partner.email}</Text>
+            <Text numberOfLines={1} style={styles.partnerEmail}>{partner.email ?? partner.mobile ?? '--'}</Text>
           </View>
         </View>
 
-        <StatusBadge label={partner.isActive ? 'ACTIVE' : 'INACTIVE'} tone={partner.isActive ? 'green' : 'red'} />
+        <StatusBadge label={isActive ? 'ACTIVE' : 'INACTIVE'} tone={isActive ? 'green' : 'red'} />
       </View>
 
       <View style={styles.deliveryCountBox}>
-        <Text style={styles.deliveryCountLabel}>Total Deliveries</Text>
-        <Text style={styles.deliveryCountValue}>{partner.totalDeliveries}</Text>
+        <Text style={styles.deliveryCountLabel}>Active Orders</Text>
+        <Text style={styles.deliveryCountValue}>{partner.active_order_count}</Text>
       </View>
 
       <View style={styles.partnerActionsRow}>
         <ActionButton label="Edit" tone="muted" icon="create-outline" style={styles.partnerActionButton} onPress={onEdit} />
         <ActionButton
-          label={partner.isActive ? 'Disable' : 'Activate'}
-          tone={partner.isActive ? 'muted' : 'success'}
-          icon={partner.isActive ? 'power-outline' : 'checkmark-outline'}
-          style={[styles.partnerActionButton, partner.isActive ? styles.partnerDisableButton : null]}
+          label={isActive ? 'Disable' : 'Activate'}
+          tone={isActive ? 'muted' : 'success'}
+          icon={isActive ? 'power-outline' : 'checkmark-outline'}
+          style={[styles.partnerActionButton, isActive ? styles.partnerDisableButton : null]}
           onPress={onToggleStatus}
         />
       </View>
@@ -117,30 +154,38 @@ function PartnerCard({
   );
 }
 
-interface DeliveryPartnerFormProps {
-  title: string;
-  initialName: string;
-  initialEmail: string;
-  submitLabel: string;
-  onBack: () => void;
-  onSubmit: (input: { name: string; email: string; password: string }) => void;
-}
-
 function DeliveryPartnerForm({
   title,
   initialName,
   initialEmail,
+  initialMobile,
   submitLabel,
   onBack,
   onSubmit,
-}: DeliveryPartnerFormProps) {
+}: {
+  title: string;
+  initialName: string;
+  initialEmail: string | null;
+  initialMobile: string | null;
+  submitLabel: string;
+  onBack: () => void;
+  onSubmit: (input: { name: string; email: string; mobile: string; password?: string }) => Promise<void>;
+}) {
   const [name, setName] = useState(initialName);
-  const [email, setEmail] = useState(initialEmail);
+  const [email, setEmail] = useState(initialEmail ?? '');
+  const [mobile, setMobile] = useState(initialMobile ?? '');
   const [password, setPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
+  const editing = Boolean(initialName);
   const canSubmit = useMemo(
-    () => name.trim().length > 1 && email.includes('@') && (password.length >= 4 || initialName.length > 0),
-    [name, email, password, initialName.length],
+    () =>
+      name.trim().length > 1 &&
+      email.includes('@') &&
+      mobile.replace(/\D/g, '').length === 10 &&
+      (editing || password.length >= 6),
+    [editing, email, mobile, name, password.length],
   );
 
   return (
@@ -175,28 +220,49 @@ function DeliveryPartnerForm({
           />
 
           <FormField
-            label="Password"
+            label="Mobile Number"
+            icon="call-outline"
+            value={mobile}
+            onChangeText={(value) => setMobile(value.replace(/\D/g, '').slice(0, 10))}
+            placeholder="Enter 10 digit mobile"
+            keyboardType="number-pad"
+            maxLength={10}
+          />
+
+          <FormField
+            label={editing ? 'New Password (Optional)' : 'Password'}
             icon="key-outline"
             value={password}
             onChangeText={setPassword}
-            placeholder="Set a password"
+            placeholder={editing ? 'Leave blank to keep current password' : 'Set a password'}
             secureTextEntry
           />
         </View>
 
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
         <ActionButton
-          label={submitLabel}
-          disabled={!canSubmit}
+          label={saving ? 'Saving...' : submitLabel}
+          disabled={!canSubmit || saving}
           onPress={() => {
-            if (!canSubmit) {
+            if (!canSubmit || saving) {
               return;
             }
 
-            onSubmit({
+            setSaving(true);
+            setError(null);
+            void onSubmit({
               name: name.trim(),
               email: email.trim().toLowerCase(),
-              password,
-            });
+              mobile,
+              ...(password.trim() ? { password } : {}),
+            })
+              .catch((submitError) => {
+                setError(submitError instanceof Error ? submitError.message : 'Could not save delivery partner.');
+              })
+              .finally(() => {
+                setSaving(false);
+              });
           }}
         />
       </ScrollView>
@@ -232,6 +298,11 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 86,
     gap: 12,
+  },
+  errorText: {
+    color: tokens.colors.danger,
+    fontSize: 13,
+    fontWeight: '700',
   },
   partnerCard: {
     backgroundColor: '#f7f7f8',

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { SafeAreaView, StyleSheet, View } from 'react-native';
 
+import { VendorAppProvider } from '../../context/VendorAppContext';
 import { VendorTabKey } from '../../types/workflow';
 import { VendorDashboardScreen } from './VendorDashboardScreen';
 import { VendorDeliveryPartnersScreen } from './VendorDeliveryPartnersScreen';
@@ -14,17 +15,19 @@ export function VendorWorkspace() {
   const [activeTab, setActiveTab] = useState<VendorTabKey>('dashboard');
 
   return (
-    <SafeAreaView style={styles.root}>
-      <View style={styles.mainArea}>
-        {activeTab === 'dashboard' ? <VendorDashboardScreen onGoToTab={setActiveTab} /> : null}
-        {activeTab === 'orders' ? <VendorOrdersScreen /> : null}
-        {activeTab === 'products' ? <VendorProductsScreen /> : null}
-        {activeTab === 'delivery' ? <VendorDeliveryPartnersScreen /> : null}
-        {activeTab === 'profile' ? <VendorProfileScreen /> : null}
-      </View>
+    <VendorAppProvider>
+      <SafeAreaView style={styles.root}>
+        <View style={styles.mainArea}>
+          {activeTab === 'dashboard' ? <VendorDashboardScreen onGoToTab={setActiveTab} /> : null}
+          {activeTab === 'orders' ? <VendorOrdersScreen /> : null}
+          {activeTab === 'products' ? <VendorProductsScreen /> : null}
+          {activeTab === 'delivery' ? <VendorDeliveryPartnersScreen /> : null}
+          {activeTab === 'profile' ? <VendorProfileScreen /> : null}
+        </View>
 
-      <VendorBottomTabs activeTab={activeTab} onPressTab={setActiveTab} />
-    </SafeAreaView>
+        <VendorBottomTabs activeTab={activeTab} onPressTab={setActiveTab} />
+      </SafeAreaView>
+    </VendorAppProvider>
   );
 }
 

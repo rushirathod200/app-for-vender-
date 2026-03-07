@@ -187,10 +187,11 @@ const vendorTabMeta: Record<VendorTabKey, { label: string; icon: keyof typeof Ma
 interface VendorBottomTabsProps {
   activeTab: VendorTabKey;
   onPressTab: (tab: VendorTabKey) => void;
+  tabs?: VendorTabKey[];
 }
 
-export function VendorBottomTabs({ activeTab, onPressTab }: VendorBottomTabsProps) {
-  const orderedTabs: VendorTabKey[] = ['dashboard', 'orders', 'products', 'delivery', 'profile'];
+export function VendorBottomTabs({ activeTab, onPressTab, tabs }: VendorBottomTabsProps) {
+  const orderedTabs: VendorTabKey[] = tabs ?? ['dashboard', 'orders', 'products', 'delivery', 'profile'];
 
   return (
     <View style={styles.bottomTabsWrap}>

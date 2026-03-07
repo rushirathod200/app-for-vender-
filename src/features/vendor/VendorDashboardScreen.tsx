@@ -1,62 +1,115 @@
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import React, { useMemo } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import React, { useEffect, useMemo } from 'react';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { useAppWorkflow } from '../../context/AppWorkflowContext';
+import { useVendorApp } from '../../context/VendorAppContext';
+import { VendorTabKey } from '../../types/workflow';
+import { formatCurrency, prettifyStatus } from '../../utils/format';
+import {
+  formatRelativeTime,
+  groupVendorOrderStatus,
+  isSameCalendarDay,
+  resolveVendorDisplayName,
+} from '../../utils/vendor';
 import { ModePill, SectionTitle, StatusBadge } from '../shared/ui';
 import { tokens } from '../shared/tokens';
-import { VendorTabKey } from '../../types/workflow';
 
 interface VendorDashboardScreenProps {
   onGoToTab: (tab: VendorTabKey) => void;
 }
 
 export function VendorDashboardScreen({ onGoToTab }: VendorDashboardScreenProps) {
-  const { orders, products, deliveryPartners, isStoreOpen, setStoreOpen } = useAppWorkflow();
+  const {
+    profile,
+    buildings,
+    allProducts,
+    orders,
+    deliveryPartners,
+    isLoading,
+    error,
+    refreshAll,
+    toggleStoreOpen,
+  } = useVendorApp();
 
-  const pendingCount = useMemo(() => orders.filter((order) => order.status === 'pending').length, [orders]);
-  const completedCount = useMemo(() => orders.filter((order) => order.status === 'completed').length, [orders]);
+  useEffect(() => {
+    void refreshAll();
+  }, []);
+
+  const storeName = useMemo(() => resolveVendorDisplayName(profile?.name ?? null, buildings), [buildings, profile?.name]);
+  const isStoreOpen = profile?.store_open ?? false;
+
+  const openOrders = useMemo(
+    () => orders.filter((order) => groupVendorOrderStatus(order.status) === 'pending'),
+    [orders],
+  );
+  const completedOrders = useMemo(
+    () => orders.filter((order) => groupVendorOrderStatus(order.status) === 'completed'),
+    [orders],
+  );
+  const todaysOrders = useMemo(
+    () => orders.filter((order) => isSameCalendarDay(order.placed_at)).length,
+    [orders],
+  );
+  const activeProducts = useMemo(
+    () => allProducts.filter((product) => product.is_available),
+    [allProducts],
+  );
+  const totalSales = useMemo(
+    () => completedOrders.reduce((sum, order) => sum + order.total, 0),
+    [completedOrders],
+  );
+  const recentOrders = useMemo(() => orders.slice(0, 2), [orders]);
+  const activePartners = useMemo(
+    () => deliveryPartners.filter((partner) => partner.partner_active && partner.app_access_active),
+    [deliveryPartners],
+  );
 
   const stats = [
     {
       icon: 'document-text-outline' as const,
-      value: orders.length,
+      value: todaysOrders,
       label: "Today's Orders",
       color: tokens.colors.vendorPrimary,
     },
     {
       icon: 'time-outline' as const,
-      value: pendingCount,
+      value: openOrders.length,
       label: 'Pending',
       color: '#f59f0b',
     },
     {
       icon: 'checkmark-circle-outline' as const,
-      value: completedCount,
+      value: completedOrders.length,
       label: 'Completed',
       color: '#28c66f',
     },
   ];
 
-  const activityRows = [
-    `New order #${orders.find((item) => item.status === 'pending')?.id ?? 'ORD-1024'} received`,
-    `Order #${orders.find((item) => item.status === 'completed')?.id ?? 'ORD-1022'} delivered`,
-  ];
-
   return (
     <View style={styles.root}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={isLoading}
+            onRefresh={() => {
+              void refreshAll();
+            }}
+          />
+        }
+      >
         <ModePill text="🛵 Vendor — Dashboard" />
 
         <View style={styles.heroCard}>
           <View style={styles.heroTopRow}>
             <View style={styles.heroTitleWrap}>
-              <Text style={styles.greeting}>Good Morning 👋</Text>
-              <Text style={styles.storeName}>Brewed Bliss Café</Text>
+              <Text style={styles.greeting}>Welcome back</Text>
+              <Text style={styles.storeName}>{storeName}</Text>
             </View>
-            <Pressable style={styles.notificationButton}>
+            <View style={styles.notificationButton}>
               <Ionicons name="notifications-outline" size={20} color="#ffffff" />
-            </Pressable>
+            </View>
           </View>
 
           <View style={styles.statusCard}>
@@ -67,7 +120,9 @@ export function VendorDashboardScreen({ onGoToTab }: VendorDashboardScreenProps)
               </Text>
             </View>
             <Pressable
-              onPress={() => setStoreOpen(!isStoreOpen)}
+              onPress={() => {
+                void toggleStoreOpen();
+              }}
               style={[styles.statusTogglePill, isStoreOpen ? styles.statusTogglePillOn : styles.statusTogglePillOff]}
             >
               <View style={[styles.statusDot, isStoreOpen ? styles.statusDotOn : styles.statusDotOff]} />
@@ -81,7 +136,14 @@ export function VendorDashboardScreen({ onGoToTab }: VendorDashboardScreenProps)
               />
             </Pressable>
           </View>
+
+          <View style={styles.salesRow}>
+            <Text style={styles.salesLabel}>Delivered Sales</Text>
+            <Text style={styles.salesValue}>{formatCurrency(totalSales)}</Text>
+          </View>
         </View>
+
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
         <View style={styles.statsRow}>
           {stats.map((stat) => (
@@ -103,18 +165,7 @@ export function VendorDashboardScreen({ onGoToTab }: VendorDashboardScreenProps)
           </View>
           <View style={styles.quickActionBody}>
             <Text style={styles.quickActionTitle}>View Orders</Text>
-            <Text style={styles.quickActionSub}>{pendingCount} orders pending</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color="#c2c2cb" />
-        </Pressable>
-
-        <Pressable style={styles.quickActionCard} onPress={() => onGoToTab('delivery')}>
-          <View style={[styles.quickActionIcon, { backgroundColor: '#ecedff' }]}>
-            <MaterialCommunityIcons name="bike-fast" size={20} color="#6a74f8" />
-          </View>
-          <View style={styles.quickActionBody}>
-            <Text style={styles.quickActionTitle}>Delivery Boys</Text>
-            <Text style={styles.quickActionSub}>{deliveryPartners.filter((item) => item.isActive).length} partners active</Text>
+            <Text style={styles.quickActionSub}>{openOrders.length} orders in progress</Text>
           </View>
           <Ionicons name="chevron-forward" size={18} color="#c2c2cb" />
         </Pressable>
@@ -125,7 +176,29 @@ export function VendorDashboardScreen({ onGoToTab }: VendorDashboardScreenProps)
           </View>
           <View style={styles.quickActionBody}>
             <Text style={styles.quickActionTitle}>Manage Products</Text>
-            <Text style={styles.quickActionSub}>{products.length} products listed</Text>
+            <Text style={styles.quickActionSub}>{allProducts.length} menu items available</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="#c2c2cb" />
+        </Pressable>
+
+        <Pressable style={styles.quickActionCard} onPress={() => onGoToTab('delivery')}>
+          <View style={[styles.quickActionIcon, { backgroundColor: '#ecedff' }]}>
+            <Ionicons name="bicycle-outline" size={20} color="#6a74f8" />
+          </View>
+          <View style={styles.quickActionBody}>
+            <Text style={styles.quickActionTitle}>Delivery Boys</Text>
+            <Text style={styles.quickActionSub}>{activePartners.length} partners active</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="#c2c2cb" />
+        </Pressable>
+
+        <Pressable style={styles.quickActionCard} onPress={() => onGoToTab('profile')}>
+          <View style={[styles.quickActionIcon, { backgroundColor: '#ecedff' }]}>
+            <Ionicons name="person-outline" size={20} color="#6a74f8" />
+          </View>
+          <View style={styles.quickActionBody}>
+            <Text style={styles.quickActionTitle}>Vendor Profile</Text>
+            <Text style={styles.quickActionSub}>{profile?.email ?? profile?.mobile ?? 'Open account details'}</Text>
           </View>
           <Ionicons name="chevron-forward" size={18} color="#c2c2cb" />
         </Pressable>
@@ -133,20 +206,34 @@ export function VendorDashboardScreen({ onGoToTab }: VendorDashboardScreenProps)
         <SectionTitle title="Recent Activity" />
 
         <View style={styles.activityCard}>
-          <View style={styles.activityRow}>
-            <View style={[styles.activityDot, { backgroundColor: tokens.colors.vendorPrimary }]} />
-            <Text style={styles.activityText}>{activityRows[0]}</Text>
-            <Text style={styles.activityTime}>2 min ago</Text>
-          </View>
-
-          <View style={styles.activityRow}>
-            <View style={[styles.activityDot, { backgroundColor: '#28c66f' }]} />
-            <Text style={styles.activityText}>{activityRows[1]}</Text>
-            <Text style={styles.activityTime}>15 min ago</Text>
-          </View>
+          {recentOrders.length ? (
+            recentOrders.map((order) => (
+              <View key={order.id} style={styles.activityRow}>
+                <View
+                  style={[
+                    styles.activityDot,
+                    {
+                      backgroundColor:
+                        order.status === 'cancelled'
+                          ? tokens.colors.danger
+                          : order.status === 'delivered'
+                            ? tokens.colors.success
+                            : tokens.colors.vendorPrimary,
+                    },
+                  ]}
+                />
+                <Text style={styles.activityText}>
+                  {order.order_no} is {prettifyStatus(order.status).toLowerCase()}
+                </Text>
+                <Text style={styles.activityTime}>{formatRelativeTime(order.placed_at)}</Text>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.emptyActivityText}>No live order activity yet.</Text>
+          )}
 
           <View style={styles.badgeWrap}>
-            <StatusBadge label={isStoreOpen ? 'Store Live' : 'Store Paused'} tone={isStoreOpen ? 'green' : 'gray'} />
+            <StatusBadge label={isLoading ? 'SYNCING' : 'LIVE'} tone={isLoading ? 'orange' : 'green'} />
           </View>
         </View>
       </ScrollView>
@@ -218,6 +305,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     marginTop: 2,
+    flexShrink: 1,
   },
   statusTogglePill: {
     minHeight: 32,
@@ -253,6 +341,26 @@ const styles = StyleSheet.create({
   },
   statusToggleTextOff: {
     color: '#c05b57',
+  },
+  salesRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  salesLabel: {
+    color: '#ffe5d3',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  salesValue: {
+    color: '#ffffff',
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  errorText: {
+    color: tokens.colors.danger,
+    fontSize: 13,
+    fontWeight: '700',
   },
   statsRow: {
     flexDirection: 'row',
@@ -322,9 +430,8 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: '#ededf2',
-    paddingVertical: 9,
-    paddingHorizontal: 10,
-    gap: 8,
+    padding: 12,
+    gap: 10,
   },
   activityRow: {
     flexDirection: 'row',
@@ -334,21 +441,25 @@ const styles = StyleSheet.create({
   activityDot: {
     width: 8,
     height: 8,
-    borderRadius: 4,
+    borderRadius: 99,
   },
   activityText: {
     flex: 1,
+    color: '#4b4b54',
     fontSize: 13,
-    color: '#3a3a43',
-    fontWeight: '600',
+    fontWeight: '700',
   },
   activityTime: {
-    color: '#a2a2ab',
+    color: '#9e9ea7',
     fontSize: 11,
+    fontWeight: '700',
+  },
+  emptyActivityText: {
+    color: '#8b8b95',
+    fontSize: 13,
     fontWeight: '600',
   },
   badgeWrap: {
-    marginTop: 6,
     alignItems: 'flex-start',
   },
 });

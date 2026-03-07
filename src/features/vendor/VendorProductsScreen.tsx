@@ -1,7 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Image,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -9,45 +11,80 @@ import {
   View,
 } from 'react-native';
 
-import { useAppWorkflow } from '../../context/AppWorkflowContext';
+import {
+  createVendorMenuItem,
+  deleteVendorMenuItem,
+  fetchCatalogProducts,
+  updateVendorMenuItem,
+} from '../../api/vendorApi';
+import { useVendorApp } from '../../context/VendorAppContext';
+import { CatalogProduct, MenuItem } from '../../types/vendor';
 import { ActionButton, IconOnlyButton, ModePill, SectionTitle } from '../shared/ui';
-import { ProductCatalogItem } from '../../types/workflow';
 import { tokens } from '../shared/tokens';
 
 type ProductsMode =
   | { screen: 'list' }
-  | { screen: 'edit'; productId: string }
+  | { screen: 'edit'; productId: number }
   | { screen: 'add' };
 
 export function VendorProductsScreen() {
   const {
+    buildings,
+    selectedBuildingId,
+    setSelectedBuildingId,
     products,
+    productsLoading,
+    error,
+    refreshProducts,
     toggleProductActive,
-    deleteProduct,
-    updateProductPrice,
-    addProductFromCatalog,
-    availableCatalogItems,
-  } = useAppWorkflow();
+  } = useVendorApp();
 
   const [mode, setMode] = useState<ProductsMode>({ screen: 'list' });
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const selectedProduct = useMemo(
+    () => (mode.screen === 'edit' ? products.find((item) => item.id === mode.productId) ?? null : null),
+    [mode, products],
+  );
+  const selectedBuilding = useMemo(
+    () => buildings.find((building) => building.id === selectedBuildingId) ?? null,
+    [buildings, selectedBuildingId],
+  );
+  const activeCount = useMemo(
+    () => products.filter((product) => product.is_available).length,
+    [products],
+  );
+
+  useEffect(() => {
+    if (mode.screen === 'edit' && !selectedProduct) {
+      setMode({ screen: 'list' });
+    }
+  }, [mode, selectedProduct]);
+
+  useEffect(() => {
+    if (!selectedBuildingId) {
+      return;
+    }
+
+    void refreshProducts();
+  }, [selectedBuildingId]);
 
   if (mode.screen === 'edit') {
-    const selectedProduct = products.find((item) => item.id === mode.productId);
-
     if (!selectedProduct) {
-      setMode({ screen: 'list' });
       return null;
     }
 
     return (
       <EditPriceScreen
-        productName={selectedProduct.name}
-        category={selectedProduct.category}
-        emoji={selectedProduct.emoji}
-        initialPrice={selectedProduct.price}
+        product={selectedProduct}
         onBack={() => setMode({ screen: 'list' })}
-        onSave={(nextPrice) => {
-          updateProductPrice(selectedProduct.id, nextPrice);
+        onSave={async (nextPrice) => {
+          await updateVendorMenuItem(selectedProduct.id, {
+            title: selectedProduct.title,
+            price: nextPrice,
+            is_available: selectedProduct.is_available,
+          });
+          await refreshProducts();
           setMode({ screen: 'list' });
         }}
       />
@@ -57,10 +94,22 @@ export function VendorProductsScreen() {
   if (mode.screen === 'add') {
     return (
       <AddProductScreen
-        catalog={availableCatalogItems()}
+        buildingId={selectedBuildingId}
+        buildingName={selectedBuilding?.name ?? null}
         onBack={() => setMode({ screen: 'list' })}
-        onAdd={(catalogItem, price) => {
-          addProductFromCatalog(catalogItem.id, price);
+        onAdd={async (catalogItem, price) => {
+          if (!selectedBuildingId) {
+            throw new Error('Select a building before adding a product.');
+          }
+
+          await createVendorMenuItem({
+            building_id: selectedBuildingId,
+            predefined_product_id: catalogItem.id,
+            title: catalogItem.name,
+            price,
+            is_available: true,
+          });
+          await refreshProducts();
           setMode({ screen: 'list' });
         }}
       />
@@ -69,67 +118,143 @@ export function VendorProductsScreen() {
 
   return (
     <View style={styles.root}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={productsLoading}
+            onRefresh={() => {
+              void refreshProducts();
+            }}
+          />
+        }
+      >
         <ModePill text="🛵 Vendor — Products" />
 
-        <SectionTitle title="Products" subtitle={`${products.filter((item) => item.isActive).length} active products`} />
+        <SectionTitle
+          title="Products"
+          subtitle={
+            selectedBuilding
+              ? `${activeCount} active products in ${selectedBuilding.name}`
+              : 'Select a building to manage the live menu'
+          }
+        />
+
+        {buildings.length ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.buildingChips}
+          >
+            {buildings.map((building) => {
+              const isSelected = building.id === selectedBuildingId;
+
+              return (
+                <Pressable
+                  key={building.id}
+                  style={[styles.buildingChip, isSelected ? styles.buildingChipActive : null]}
+                  onPress={() => setSelectedBuildingId(building.id)}
+                >
+                  <Text style={[styles.buildingChipText, isSelected ? styles.buildingChipTextActive : null]}>
+                    {building.name}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        ) : null}
+
+        {selectedBuilding?.address ? <Text style={styles.buildingAddress}>{selectedBuilding.address}</Text> : null}
+
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+        {actionError ? <Text style={styles.errorText}>{actionError}</Text> : null}
+
+        {!selectedBuilding ? <Text style={styles.emptyText}>No assigned building found for this vendor.</Text> : null}
+
+        {selectedBuilding && products.length === 0 && !productsLoading ? (
+          <Text style={styles.emptyText}>No menu items found for this building.</Text>
+        ) : null}
 
         {products.map((product) => (
-          <View key={product.id} style={[styles.productCard, !product.isActive ? styles.productCardInactive : null]}>
+          <View key={product.id} style={[styles.productCard, !product.is_available ? styles.productCardInactive : null]}>
             <View style={styles.productTopRow}>
               <View style={styles.productMainWrap}>
-                <View style={styles.emojiWrap}>
-                  <Text style={styles.emoji}>{product.emoji}</Text>
+                <View style={styles.mediaWrap}>
+                  {product.photo_url ? (
+                    <Image source={{ uri: product.photo_url }} style={styles.productImage} />
+                  ) : (
+                    <Ionicons name="fast-food-outline" size={20} color={tokens.colors.vendorPrimary} />
+                  )}
                 </View>
 
                 <View style={styles.productTextWrap}>
-                  <Text numberOfLines={1} style={[styles.productName, !product.isActive ? styles.productNameInactive : null]}>
-                    {product.name}
+                  <Text numberOfLines={1} style={[styles.productName, !product.is_available ? styles.productNameInactive : null]}>
+                    {product.title}
                   </Text>
-                  <Text style={styles.productCategory}>{product.category}</Text>
+                  <Text style={styles.productCategory}>{product.category ?? product.product_name ?? 'Menu Item'}</Text>
                 </View>
               </View>
 
               <Pressable
-                onPress={() => toggleProductActive(product.id)}
-                style={[styles.switchWrap, product.isActive ? styles.switchWrapActive : styles.switchWrapInactive]}
+                onPress={() => {
+                  void toggleProductActive(product).catch((toggleError) => {
+                    setActionError(toggleError instanceof Error ? toggleError.message : 'Could not update product.');
+                  });
+                }}
+                style={[styles.switchWrap, product.is_available ? styles.switchWrapActive : styles.switchWrapInactive]}
               >
-                <View style={[styles.switchDot, product.isActive ? styles.switchDotActive : styles.switchDotInactive]} />
+                <View style={[styles.switchDot, product.is_available ? styles.switchDotActive : styles.switchDotInactive]} />
               </Pressable>
             </View>
 
             <View style={styles.productBottomRow}>
-              <View style={[styles.priceBadge, !product.isActive ? styles.priceBadgeInactive : null]}>
-                <Text style={[styles.priceText, !product.isActive ? styles.priceTextInactive : null]}>₹{product.price}</Text>
+              <View style={[styles.priceBadge, !product.is_available ? styles.priceBadgeInactive : null]}>
+                <Text style={[styles.priceText, !product.is_available ? styles.priceTextInactive : null]}>₹{product.price}</Text>
               </View>
 
               <View style={styles.rightActions}>
                 <IconOnlyButton onPress={() => setMode({ screen: 'edit', productId: product.id })} icon="create-outline" />
-                <IconOnlyButton onPress={() => deleteProduct(product.id)} icon="trash-outline" tone="danger" />
+                <IconOnlyButton
+                  onPress={() => {
+                    void deleteVendorMenuItem(product.id)
+                      .then(() => refreshProducts())
+                      .catch((deleteError) => {
+                        setActionError(deleteError instanceof Error ? deleteError.message : 'Could not delete product.');
+                      });
+                  }}
+                  icon="trash-outline"
+                  tone="danger"
+                />
               </View>
             </View>
           </View>
         ))}
       </ScrollView>
 
-      <Pressable style={styles.fabButton} onPress={() => setMode({ screen: 'add' })}>
+      <Pressable
+        style={[styles.fabButton, !selectedBuilding ? styles.fabButtonDisabled : null]}
+        onPress={() => setMode({ screen: 'add' })}
+        disabled={!selectedBuilding}
+      >
         <Ionicons name="add" size={30} color="#ffffff" />
       </Pressable>
     </View>
   );
 }
 
-interface EditPriceScreenProps {
-  productName: string;
-  category: string;
-  emoji: string;
-  initialPrice: number;
-  onSave: (price: number) => void;
+function EditPriceScreen({
+  product,
+  onSave,
+  onBack,
+}: {
+  product: MenuItem;
+  onSave: (price: number) => Promise<void>;
   onBack: () => void;
-}
-
-function EditPriceScreen({ productName, category, emoji, initialPrice, onSave, onBack }: EditPriceScreenProps) {
-  const [priceInput, setPriceInput] = useState(String(initialPrice));
+}) {
+  const [priceInput, setPriceInput] = useState(String(product.price));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const parsedPrice = Number(priceInput);
   const isValid = Number.isFinite(parsedPrice) && parsedPrice > 0;
@@ -147,9 +272,15 @@ function EditPriceScreen({ productName, category, emoji, initialPrice, onSave, o
         </View>
 
         <View style={styles.editCard}>
-          <Text style={styles.editEmoji}>{emoji}</Text>
-          <Text style={styles.editName}>{productName}</Text>
-          <Text style={styles.editCategory}>{category}</Text>
+          <View style={styles.editMediaWrap}>
+            {product.photo_url ? (
+              <Image source={{ uri: product.photo_url }} style={styles.editMediaImage} />
+            ) : (
+              <Ionicons name="fast-food-outline" size={26} color={tokens.colors.vendorPrimary} />
+            )}
+          </View>
+          <Text style={styles.editName}>{product.title}</Text>
+          <Text style={styles.editCategory}>{product.category ?? product.product_name ?? 'Menu Item'}</Text>
 
           <Text style={styles.inputLabel}>New Price (₹)</Text>
           <TextInput
@@ -162,31 +293,98 @@ function EditPriceScreen({ productName, category, emoji, initialPrice, onSave, o
           />
         </View>
 
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
         <ActionButton
-          label="Update Price"
+          label={saving ? 'Updating...' : 'Update Price'}
           onPress={() => {
-            if (!isValid) {
+            if (!isValid || saving) {
               return;
             }
 
-            onSave(parsedPrice);
+            setSaving(true);
+            setError(null);
+            void onSave(parsedPrice)
+              .catch((saveError) => {
+                setError(saveError instanceof Error ? saveError.message : 'Could not update product.');
+              })
+              .finally(() => {
+                setSaving(false);
+              });
           }}
-          disabled={!isValid}
+          disabled={!isValid || saving}
         />
       </ScrollView>
     </View>
   );
 }
 
-interface AddProductScreenProps {
-  catalog: ProductCatalogItem[];
+function AddProductScreen({
+  buildingId,
+  buildingName,
+  onBack,
+  onAdd,
+}: {
+  buildingId: number | null;
+  buildingName: string | null;
   onBack: () => void;
-  onAdd: (selected: ProductCatalogItem, price: number) => void;
-}
-
-function AddProductScreen({ catalog, onBack, onAdd }: AddProductScreenProps) {
-  const [selectedCatalogId, setSelectedCatalogId] = useState<string | null>(catalog[0]?.id ?? null);
+  onAdd: (selected: CatalogProduct, price: number) => Promise<void>;
+}) {
+  const [catalog, setCatalog] = useState<CatalogProduct[]>([]);
+  const [selectedCatalogId, setSelectedCatalogId] = useState<number | null>(null);
   const [priceInput, setPriceInput] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadCatalog = async (showLoader: boolean): Promise<void> => {
+      if (!buildingId) {
+        if (isMounted) {
+          setCatalog([]);
+          setLoading(false);
+        }
+        return;
+      }
+
+      if (showLoader && isMounted) {
+        setLoading(true);
+      }
+
+      try {
+        const items = await fetchCatalogProducts({ buildingId });
+        const available = items.filter((item) => item.is_active && !item.is_added);
+
+        if (!isMounted) {
+          return;
+        }
+
+        setCatalog(available);
+        setSelectedCatalogId((current) =>
+          current && available.some((item) => item.id === current) ? current : (available[0]?.id ?? null),
+        );
+        setError(null);
+      } catch (loadError) {
+        if (!isMounted) {
+          return;
+        }
+
+        setError(loadError instanceof Error ? loadError.message : 'Could not load catalog products.');
+      } finally {
+        if (showLoader && isMounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void loadCatalog(true);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [buildingId]);
 
   const selectedItem = useMemo(
     () => catalog.find((item) => item.id === selectedCatalogId) ?? null,
@@ -194,7 +392,7 @@ function AddProductScreen({ catalog, onBack, onAdd }: AddProductScreenProps) {
   );
 
   const parsedPrice = Number(priceInput);
-  const canSubmit = !!selectedItem && Number.isFinite(parsedPrice) && parsedPrice > 0;
+  const canSubmit = !!selectedItem && Number.isFinite(parsedPrice) && parsedPrice > 0 && !saving;
 
   return (
     <View style={styles.root}>
@@ -208,37 +406,51 @@ function AddProductScreen({ catalog, onBack, onAdd }: AddProductScreenProps) {
           <Text style={styles.editTitle}>Add Product</Text>
         </View>
 
-        <Text style={styles.addSubtitle}>Select a product from admin's catalog</Text>
+        <Text style={styles.addSubtitle}>
+          {buildingName ? `Select a product for ${buildingName}` : 'Select a product from the vendor catalog'}
+        </Text>
 
-        {catalog.length === 0 ? (
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
+        {loading ? <Text style={styles.emptyText}>Loading catalog...</Text> : null}
+
+        {!loading && catalog.length === 0 ? (
           <View style={styles.emptyCatalogCard}>
             <Text style={styles.emptyCatalogText}>All available catalog products are already added.</Text>
           </View>
-        ) : (
-          catalog.map((item) => {
-            const isSelected = item.id === selectedCatalogId;
+        ) : null}
 
-            return (
-              <Pressable
-                key={item.id}
-                onPress={() => setSelectedCatalogId(item.id)}
-                style={[styles.catalogCard, isSelected ? styles.catalogCardSelected : null]}
-              >
-                <View style={styles.catalogMain}>
-                  <Text style={styles.catalogEmoji}>{item.emoji}</Text>
-                  <View style={styles.catalogTextWrap}>
-                    <Text numberOfLines={1} style={styles.catalogName}>{item.name}</Text>
-                    <Text style={styles.catalogCategory}>{item.category}</Text>
+        {!loading
+          ? catalog.map((item) => {
+              const isSelected = item.id === selectedCatalogId;
+
+              return (
+                <Pressable
+                  key={item.id}
+                  onPress={() => setSelectedCatalogId(item.id)}
+                  style={[styles.catalogCard, isSelected ? styles.catalogCardSelected : null]}
+                >
+                  <View style={styles.catalogMain}>
+                    <View style={styles.catalogMediaWrap}>
+                      {item.default_image_url ? (
+                        <Image source={{ uri: item.default_image_url }} style={styles.catalogMediaImage} />
+                      ) : (
+                        <Ionicons name="fast-food-outline" size={20} color={tokens.colors.vendorPrimary} />
+                      )}
+                    </View>
+                    <View style={styles.catalogTextWrap}>
+                      <Text numberOfLines={1} style={styles.catalogName}>{item.name}</Text>
+                      <Text style={styles.catalogCategory}>{item.category ?? 'Product'}</Text>
+                    </View>
                   </View>
-                </View>
 
-                <View style={[styles.catalogSelectDot, isSelected ? styles.catalogSelectDotActive : null]}>
-                  {isSelected ? <Ionicons name="checkmark" size={14} color="#ffffff" /> : null}
-                </View>
-              </Pressable>
-            );
-          })
-        )}
+                  <View style={[styles.catalogSelectDot, isSelected ? styles.catalogSelectDotActive : null]}>
+                    {isSelected ? <Ionicons name="checkmark" size={14} color="#ffffff" /> : null}
+                  </View>
+                </Pressable>
+              );
+            })
+          : null}
 
         <View style={styles.priceBox}>
           <Text style={styles.inputLabel}>Set Price for {selectedItem?.name ?? 'Selected Product'} (₹)</Text>
@@ -253,14 +465,22 @@ function AddProductScreen({ catalog, onBack, onAdd }: AddProductScreenProps) {
         </View>
 
         <ActionButton
-          label="Add Product"
+          label={saving ? 'Adding...' : 'Add Product'}
           disabled={!canSubmit}
           onPress={() => {
             if (!selectedItem || !canSubmit) {
               return;
             }
 
-            onAdd(selectedItem, parsedPrice);
+            setSaving(true);
+            setError(null);
+            void onAdd(selectedItem, parsedPrice)
+              .catch((addError) => {
+                setError(addError instanceof Error ? addError.message : 'Could not add product.');
+              })
+              .finally(() => {
+                setSaving(false);
+              });
           }}
         />
       </ScrollView>
@@ -277,6 +497,45 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 90,
     gap: 10,
+  },
+  buildingChips: {
+    gap: 8,
+    paddingRight: 16,
+  },
+  buildingChip: {
+    minHeight: 34,
+    borderRadius: 999,
+    backgroundColor: '#ececef',
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  buildingChipActive: {
+    backgroundColor: tokens.colors.vendorPrimary,
+  },
+  buildingChipText: {
+    color: '#7f7f89',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  buildingChipTextActive: {
+    color: '#ffffff',
+  },
+  buildingAddress: {
+    color: '#8b8b95',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: -2,
+  },
+  errorText: {
+    color: tokens.colors.danger,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  emptyText: {
+    color: '#8b8b95',
+    fontSize: 13,
+    fontWeight: '600',
   },
   productCard: {
     backgroundColor: '#f7f7f8',
@@ -300,16 +559,18 @@ const styles = StyleSheet.create({
     gap: 8,
     flex: 1,
   },
-  emojiWrap: {
+  mediaWrap: {
     width: 44,
     height: 44,
     borderRadius: 12,
     backgroundColor: '#f2f2f4',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
-  emoji: {
-    fontSize: 22,
+  productImage: {
+    width: '100%',
+    height: '100%',
   },
   productTextWrap: {
     flex: 1,
@@ -375,7 +636,6 @@ const styles = StyleSheet.create({
   },
   priceTextInactive: {
     color: '#d69d70',
-    textDecorationLine: 'line-through',
   },
   rightActions: {
     flexDirection: 'row',
@@ -395,6 +655,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 5 },
+  },
+  fabButtonDisabled: {
+    opacity: 0.5,
   },
   topNavRow: {
     flexDirection: 'row',
@@ -425,13 +688,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
   },
-  editEmoji: {
-    fontSize: 46,
+  editMediaWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 20,
+    backgroundColor: '#f2f2f4',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  editMediaImage: {
+    width: '100%',
+    height: '100%',
   },
   editName: {
     fontSize: 22,
     color: '#212127',
     fontWeight: '900',
+    textAlign: 'center',
   },
   editCategory: {
     fontSize: 12,
@@ -494,11 +768,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
   },
+  catalogMediaWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: '#f2f2f4',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  catalogMediaImage: {
+    width: '100%',
+    height: '100%',
+  },
   catalogTextWrap: {
     flex: 1,
-  },
-  catalogEmoji: {
-    fontSize: 24,
   },
   catalogName: {
     color: '#222329',
@@ -526,11 +810,10 @@ const styles = StyleSheet.create({
   },
   priceBox: {
     backgroundColor: '#f7f7f8',
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: '#ededf2',
-    borderRadius: 14,
     padding: 12,
     gap: 8,
-    marginTop: 2,
   },
 });

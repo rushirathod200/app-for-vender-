@@ -2,27 +2,39 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { useAppWorkflow } from '../../context/AppWorkflowContext';
-import { ActionButton, Field, ModePill } from '../shared/ui';
+import { useAuth } from '../../context/AuthContext';
+import { ActionButton, Field } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
 export function StyledLoginScreen() {
-  const { login } = useAppWorkflow();
+  const { login } = useAuth();
 
-  const [email, setEmail] = useState('vendor@cafeconnect.com');
-  const [password, setPassword] = useState('1234');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const onLogin = async (): Promise<void> => {
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!normalizedEmail.includes('@')) {
+      setError('Enter a valid email address.');
+      return;
+    }
+
+    if (password.trim().length < 6) {
+      setError('Enter your password.');
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
     try {
-      await login({ email, password });
+      await login({ email: normalizedEmail, password });
     } catch (loginError) {
-      setError(loginError instanceof Error ? loginError.message : 'Login failed.');
+      setError(loginError instanceof Error ? loginError.message : 'Could not login.');
     } finally {
       setLoading(false);
     }
@@ -34,8 +46,6 @@ export function StyledLoginScreen() {
       behavior={Platform.select({ ios: 'padding', android: undefined })}
     >
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-        <ModePill text="👜 Login Screen" />
-
         <View style={styles.heroCard}>
           <View style={styles.heroIconWrap}>
             <MaterialCommunityIcons name="shopping-outline" size={30} color="#ffffff" />
@@ -46,23 +56,32 @@ export function StyledLoginScreen() {
 
         <View style={styles.formWrap}>
           <Text style={styles.formTitle}>Welcome Back! 👋</Text>
-          <Text style={styles.formSubTitle}>Sign in to manage your orders</Text>
+          <Text style={styles.formSubTitle}>Sign in with your vendor email and password</Text>
 
           <Field
             label="Email Address"
             value={email}
-            onChangeText={setEmail}
+            onChangeText={(value) => {
+              setEmail(value);
+              if (error) {
+                setError(null);
+              }
+            }}
             icon="mail-outline"
             autoCapitalize="none"
+            keyboardType="email-address"
             placeholder="Enter your email"
           />
-
-          <Text style={styles.tip}>Tip: Use `vendor@...` for Vendor or any email for Delivery Partner</Text>
 
           <Field
             label="Password"
             value={password}
-            onChangeText={setPassword}
+            onChangeText={(value) => {
+              setPassword(value);
+              if (error) {
+                setError(null);
+              }
+            }}
             icon="lock-closed-outline"
             placeholder="Enter your password"
             secureTextEntry={!showPassword}
@@ -74,7 +93,7 @@ export function StyledLoginScreen() {
 
           <View style={styles.roleInfoWrap}>
             <Ionicons name="bag-handle-outline" size={15} color={tokens.colors.vendorPrimary} />
-            <Text style={styles.roleInfoText}>Your role is determined by your account type</Text>
+            <Text style={styles.roleInfoText}>Vendor and delivery accounts can sign in here</Text>
           </View>
 
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
@@ -137,12 +156,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#7f7f89',
     fontWeight: '600',
-  },
-  tip: {
-    color: '#9a9aa1',
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: -6,
   },
   roleInfoWrap: {
     borderWidth: 1,

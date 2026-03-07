@@ -2,40 +2,40 @@ import { StatusBar } from 'expo-status-bar';
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { AppWorkflowProvider, useAppWorkflow } from './src/context/AppWorkflowContext';
+import { theme } from './src/config/theme';
+import { AuthProvider, useAuth } from './src/context/AuthContext';
 import { StyledLoginScreen } from './src/features/auth/StyledLoginScreen';
-import { DeliveryOrdersScreen } from './src/features/delivery/DeliveryOrdersScreen';
-import { tokens } from './src/features/shared/tokens';
+import { DeliveryWorkspace } from './src/features/delivery/DeliveryWorkspace';
 import { VendorWorkspace } from './src/features/vendor/VendorWorkspace';
 
 function AppBody() {
-  const { isAuthenticated, role } = useAppWorkflow();
+  const { isAuthenticated, user } = useAuth();
 
-  if (!isAuthenticated || !role) {
+  if (!isAuthenticated || !user) {
     return <StyledLoginScreen />;
   }
 
-  if (role === 'vendor') {
-    return <VendorWorkspace />;
+  if (user.role === 'delivery') {
+    return <DeliveryWorkspace />;
   }
 
-  return <DeliveryOrdersScreen />;
+  return <VendorWorkspace />;
 }
 
 export default function App() {
   return (
-    <AppWorkflowProvider>
+    <AuthProvider>
       <View style={styles.root}>
         <AppBody />
         <StatusBar style="dark" />
       </View>
-    </AppWorkflowProvider>
+    </AuthProvider>
   );
 }
 
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: tokens.colors.appBg,
+    backgroundColor: theme.colors.background,
   },
 });
