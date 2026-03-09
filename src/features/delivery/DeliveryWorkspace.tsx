@@ -1,15 +1,28 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { SafeAreaView, StyleSheet } from 'react-native';
 
 import { DeliveryAppProvider } from '../../context/DeliveryAppContext';
+import { useNotificationTap } from '../../context/NotificationTapContext';
 import { tokens } from '../shared/tokens';
 import { DeliveryOrdersScreen } from './DeliveryOrdersScreen';
 
 export function DeliveryWorkspace() {
+  const [highlightedOrderId, setHighlightedOrderId] = useState<number | null>(null);
+  const { registerHandler } = useNotificationTap();
+
+  useEffect(() => {
+    return registerHandler((orderId) => {
+      setHighlightedOrderId(orderId);
+    });
+  }, [registerHandler]);
+
   return (
     <DeliveryAppProvider>
       <SafeAreaView style={styles.root}>
-        <DeliveryOrdersScreen />
+        <DeliveryOrdersScreen
+          highlightedOrderId={highlightedOrderId}
+          onHighlightedOrderIdChange={setHighlightedOrderId}
+        />
       </SafeAreaView>
     </DeliveryAppProvider>
   );

@@ -24,10 +24,12 @@ export const API_ENDPOINTS = {
   vendorOrders: '/vendor/orders',
   vendorNotifications: '/vendor/notifications',
   vendorNotificationsUnreadCount: '/vendor/notifications/unread-count',
+  vendorDeviceToken: '/vendor/device-token',
   vendorDeliveryPartners: '/vendor/delivery-partners',
   deliveryMe: '/delivery/me',
   deliveryProfile: '/delivery/profile',
   deliveryOrders: '/delivery/orders',
   deliveryNotifications: '/delivery/notifications',
   deliveryNotificationsUnreadCount: '/delivery/notifications/unread-count',
+  deliveryDeviceToken: '/delivery/device-token',
 } as const;

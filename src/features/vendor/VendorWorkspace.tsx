@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { SafeAreaView, StyleSheet, View } from 'react-native';
 
+import { useNotificationTap } from '../../context/NotificationTapContext';
 import { VendorAppProvider } from '../../context/VendorAppContext';
 import { VendorTabKey } from '../../types/workflow';
 import { VendorDashboardScreen } from './VendorDashboardScreen';
@@ -14,6 +15,14 @@ import { tokens } from '../shared/tokens';
 export function VendorWorkspace() {
   const [activeTab, setActiveTab] = useState<VendorTabKey>('dashboard');
   const [highlightedOrderId, setHighlightedOrderId] = useState<number | null>(null);
+  const { registerHandler } = useNotificationTap();
+
+  useEffect(() => {
+    return registerHandler((orderId) => {
+      setActiveTab('orders');
+      setHighlightedOrderId(orderId);
+    });
+  }, [registerHandler]);
 
   return (
     <VendorAppProvider>

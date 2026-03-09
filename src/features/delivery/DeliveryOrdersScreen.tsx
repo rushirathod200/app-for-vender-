@@ -30,7 +30,15 @@ const tabs: Array<{ key: DeliveryTab; label: string }> = [
   { key: 'cancelled', label: 'Cancelled' },
 ];
 
-export function DeliveryOrdersScreen() {
+interface DeliveryOrdersScreenProps {
+  highlightedOrderId?: number | null;
+  onHighlightedOrderIdChange?: (orderId: number | null) => void;
+}
+
+export function DeliveryOrdersScreen({
+  highlightedOrderId: controlledHighlightedOrderId,
+  onHighlightedOrderIdChange,
+}: DeliveryOrdersScreenProps = {}) {
   const { logout } = useAuth();
   const {
     profile,
@@ -52,7 +60,12 @@ export function DeliveryOrdersScreen() {
   const [updatingKey, setUpdatingKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notificationsVisible, setNotificationsVisible] = useState(false);
-  const [highlightedOrderId, setHighlightedOrderId] = useState<number | null>(null);
+  const [internalHighlightedOrderId, setInternalHighlightedOrderId] = useState<number | null>(null);
+
+  const highlightedOrderId =
+    controlledHighlightedOrderId !== undefined ? controlledHighlightedOrderId : internalHighlightedOrderId;
+  const setHighlightedOrderId =
+    onHighlightedOrderIdChange ?? setInternalHighlightedOrderId;
   const [cancelTargetOrderId, setCancelTargetOrderId] = useState<number | null>(null);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelReasonError, setCancelReasonError] = useState<string | null>(null);

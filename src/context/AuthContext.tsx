@@ -1,15 +1,36 @@
-import React, { createContext, useContext, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { Platform } from 'react-native';
 
 import { fetchCurrentAuthUser, loginWithEmailPassword, logoutCurrentSession } from '../api/authApi';
+import { registerDeliveryDeviceToken, registerVendorDeviceToken } from '../api/deviceTokenApi';
 import { apiClient } from '../api/httpClient';
 import { AuthUser } from '../types/auth';
+import {
+  clearStoredAuth,
+  getStoredAuthToken,
+  setStoredAuthToken,
+  setStoredAuthUser,
+} from '../utils/secureStorage';
+import { registerForPushNotificationsAsync } from '../utils/pushNotifications';
 
 interface AuthContextValue {
   user: AuthUser | null;
   token: string | null;
   isAuthenticated: boolean;
+  isRestoringSession: boolean;
   login: (input: { email: string; password: string }) => Promise<void>;
   logout: () => void;
+}
+
+async function registerPushTokenIfAvailable(role: 'vendor' | 'delivery'): Promise<void> {
+  const token = await registerForPushNotificationsAsync();
+  if (!token) return;
+
+  if (role === 'vendor') {
+    await registerVendorDeviceToken({ token, platform: 'android' });
+  } else {
+    await registerDeliveryDeviceToken({ token, platform: 'android' });
+  }
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -17,6 +38,63 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [isRestoringSession, setIsRestoringSession] = useState(true);
+
+  const logout = useCallback((): void => {
+    void logoutCurrentSession().catch(() => undefined);
+    setUser(null);
+    setToken(null);
+    apiClient.setToken(null);
+    void clearStoredAuth();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function restoreSession(): Promise<void> {
+      const storedToken = await getStoredAuthToken();
+
+      if (cancelled) return;
+
+      if (!storedToken || !storedToken.trim()) {
+        setIsRestoringSession(false);
+        return;
+      }
+
+      apiClient.setToken(storedToken);
+
+      try {
+        const freshUser = await fetchCurrentAuthUser();
+        if (cancelled) return;
+
+        if (freshUser && (freshUser.role === 'vendor' || freshUser.role === 'delivery')) {
+          setToken(storedToken);
+          setUser(freshUser);
+          await setStoredAuthUser(JSON.stringify(freshUser));
+          if (Platform.OS !== 'web') {
+            registerPushTokenIfAvailable(freshUser.role).catch(() => undefined);
+          }
+        } else {
+          void clearStoredAuth();
+          apiClient.setToken(null);
+        }
+      } catch {
+        if (cancelled) return;
+        void clearStoredAuth();
+        apiClient.setToken(null);
+      } finally {
+        if (!cancelled) {
+          setIsRestoringSession(false);
+        }
+      }
+    }
+
+    void restoreSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const login = async (input: { email: string; password: string }): Promise<void> => {
     const result = await loginWithEmailPassword(input);
@@ -45,16 +123,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(resolvedUser);
     setToken(result.token);
     apiClient.setToken(result.token);
-  };
 
-  const logout = (): void => {
-    if (token) {
-      void logoutCurrentSession().catch(() => undefined);
+    await Promise.all([
+      setStoredAuthToken(result.token),
+      setStoredAuthUser(JSON.stringify(resolvedUser)),
+    ]);
+
+    if (Platform.OS !== 'web') {
+      registerPushTokenIfAvailable(resolvedUser.role).catch(() => undefined);
     }
-
-    setUser(null);
-    setToken(null);
-    apiClient.setToken(null);
   };
 
   const value = useMemo<AuthContextValue>(
@@ -62,10 +139,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       user,
       token,
       isAuthenticated: Boolean(user && token),
+      isRestoringSession,
       login,
       logout,
     }),
-    [token, user],
+    [token, user, isRestoringSession, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

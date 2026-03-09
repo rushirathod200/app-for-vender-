@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "324444079242",
+    "project_id": "building-app-c1449",
+    "storage_bucket": "building-app-c1449.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:324444079242:android:2c62ce6f542e68288b1973",
+        "android_client_info": {
+          "package_name": "com.akshayrathod.buildingapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDBW5eGpymFWyHiaddZ_Z2hfPhsI9mdaq8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
