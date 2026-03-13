@@ -1,7 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -19,6 +21,8 @@ import {
 } from '../../api/vendorApi';
 import { useVendorApp } from '../../context/VendorAppContext';
 import { CatalogProduct, MenuItem } from '../../types/vendor';
+import { useAutoClearValue } from '../../utils/useAutoClearValue';
+import { useAndroidBackHandler } from '../../utils/useAndroidBackHandler';
 import { ActionButton, IconOnlyButton, SectionTitle } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
@@ -41,6 +45,8 @@ export function VendorProductsScreen() {
 
   const [mode, setMode] = useState<ProductsMode>({ screen: 'list' });
   const [actionError, setActionError] = useState<string | null>(null);
+
+  useAutoClearValue(actionError, () => setActionError(null));
 
   const selectedProduct = useMemo(
     () => (mode.screen === 'edit' ? products.find((item) => item.id === mode.productId) ?? null : null),
@@ -69,6 +75,14 @@ export function VendorProductsScreen() {
     void refreshProducts();
   }, [selectedBuildingId]);
 
+  useAndroidBackHandler(
+    () => {
+      setMode({ screen: 'list' });
+      return true;
+    },
+    { enabled: mode.screen !== 'list', priority: 20 },
+  );
+
   if (mode.screen === 'edit') {
     if (!selectedProduct) {
       return null;
@@ -84,7 +98,7 @@ export function VendorProductsScreen() {
             price: nextPrice,
             is_available: selectedProduct.is_available,
           });
-          await refreshProducts();
+          await refreshProducts({ force: true });
           setMode({ screen: 'list' });
         }}
       />
@@ -109,7 +123,7 @@ export function VendorProductsScreen() {
             price,
             is_available: true,
           });
-          await refreshProducts();
+          await refreshProducts({ force: true });
           setMode({ screen: 'list' });
         }}
       />
@@ -125,7 +139,7 @@ export function VendorProductsScreen() {
           <RefreshControl
             refreshing={productsLoading}
             onRefresh={() => {
-              void refreshProducts();
+              void refreshProducts({ force: true });
             }}
           />
         }
@@ -165,8 +179,9 @@ export function VendorProductsScreen() {
 
         {selectedBuilding?.address ? <Text style={styles.buildingAddress}>{selectedBuilding.address}</Text> : null}
 
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
-        {actionError ? <Text style={styles.errorText}>{actionError}</Text> : null}
+        {Array.from(new Set([error, actionError].filter((message): message is string => !!message))).map((message) => (
+          <Text key={message} style={styles.errorText}>{message}</Text>
+        ))}
 
         {!selectedBuilding ? <Text style={styles.emptyText}>No assigned building found for this vendor.</Text> : null}
 
@@ -216,7 +231,7 @@ export function VendorProductsScreen() {
                 <IconOnlyButton
                   onPress={() => {
                     void deleteVendorMenuItem(product.id)
-                      .then(() => refreshProducts())
+                      .then(() => refreshProducts({ force: true }))
                       .catch((deleteError) => {
                         setActionError(deleteError instanceof Error ? deleteError.message : 'Could not delete product.');
                       });
@@ -250,16 +265,28 @@ function EditPriceScreen({
   onSave: (price: number) => Promise<void>;
   onBack: () => void;
 }) {
+  const scrollRef = useRef<ScrollView | null>(null);
   const [priceInput, setPriceInput] = useState(String(product.price));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useAutoClearValue(error, () => setError(null));
 
   const parsedPrice = Number(priceInput);
   const isValid = Number.isFinite(parsedPrice) && parsedPrice > 0;
 
   return (
-    <View style={styles.root}>
-      <ScrollView contentContainerStyle={styles.content}>
+    <KeyboardAvoidingView
+      style={styles.root}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 18 : 0}
+    >
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={[styles.content, styles.keyboardContentGrow]}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
         <View style={styles.topNavRow}>
           <Pressable style={styles.backBtn} onPress={onBack}>
             <Ionicons name="close" size={20} color="#75757f" />
@@ -283,6 +310,11 @@ function EditPriceScreen({
             value={priceInput}
             onChangeText={(value) => setPriceInput(value.replace(/[^0-9]/g, ''))}
             keyboardType="number-pad"
+            onFocus={() => {
+              setTimeout(() => {
+                scrollRef.current?.scrollToEnd({ animated: true });
+              }, 120);
+            }}
             style={styles.priceInput}
             placeholder="Enter price"
             placeholderTextColor="#9a9aa3"
@@ -311,7 +343,7 @@ function EditPriceScreen({
           disabled={!isValid || saving}
         />
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -326,12 +358,15 @@ function AddProductScreen({
   onBack: () => void;
   onAdd: (selected: CatalogProduct, price: number) => Promise<void>;
 }) {
+  const scrollRef = useRef<ScrollView | null>(null);
   const [catalog, setCatalog] = useState<CatalogProduct[]>([]);
   const [selectedCatalogId, setSelectedCatalogId] = useState<number | null>(null);
   const [priceInput, setPriceInput] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useAutoClearValue(error, () => setError(null));
 
   useEffect(() => {
     let isMounted = true;
@@ -391,8 +426,18 @@ function AddProductScreen({
   const canSubmit = !!selectedItem && Number.isFinite(parsedPrice) && parsedPrice > 0 && !saving;
 
   return (
-    <View style={styles.root}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <KeyboardAvoidingView
+      style={styles.root}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 18 : 0}
+    >
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={[styles.content, styles.keyboardContentGrow]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
         <View style={styles.topNavRow}>
           <Pressable style={styles.backBtn} onPress={onBack}>
             <Ionicons name="close" size={20} color="#75757f" />
@@ -452,6 +497,11 @@ function AddProductScreen({
             value={priceInput}
             onChangeText={(value) => setPriceInput(value.replace(/[^0-9]/g, ''))}
             keyboardType="number-pad"
+            onFocus={() => {
+              setTimeout(() => {
+                scrollRef.current?.scrollToEnd({ animated: true });
+              }, 120);
+            }}
             style={styles.priceInput}
             placeholder="Enter price e.g. 120"
             placeholderTextColor="#9a9aa3"
@@ -478,7 +528,7 @@ function AddProductScreen({
           }}
         />
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -491,6 +541,9 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 90,
     gap: 10,
+  },
+  keyboardContentGrow: {
+    flexGrow: 1,
   },
   buildingChips: {
     gap: 8,

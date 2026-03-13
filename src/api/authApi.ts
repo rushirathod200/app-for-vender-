@@ -32,6 +32,12 @@ function normalizeAuthUser(payload: unknown): AuthUser | null {
     is_active: toBooleanValue(payload.is_active, true),
     store_open: toBooleanValue(payload.store_open, true),
     delivery_charge: toNumberValue(payload.delivery_charge, 0),
+    below_minimum_order_mode:
+      toStringValue(payload.below_minimum_order_mode, 'charge_delivery') === 'block_order'
+        ? 'block_order'
+        : 'charge_delivery',
+    minimum_order_value: toNumberValue(payload.minimum_order_value, 50),
+    office_wallet_credit_enabled: toBooleanValue(payload.office_wallet_credit_enabled, false),
   };
 }
 
@@ -67,7 +73,7 @@ export async function loginWithEmailPassword(input: {
   const payload = await apiClient.post<unknown>(API_ENDPOINTS.authLogin, {
     email: input.email,
     password: input.password,
-    device_name: input.deviceName ?? 'vendor-app',
+    device_name: input.deviceName ?? 'building-cafe-app',
   });
 
   const envelope = extractDataEnvelope(payload);
@@ -103,6 +109,8 @@ export async function fetchCurrentAuthUser(): Promise<AuthUser | null> {
   return null;
 }
 
-export async function logoutCurrentSession(): Promise<void> {
-  await apiClient.post<unknown>(API_ENDPOINTS.authLogout);
+export async function logoutCurrentSession(input?: { deviceToken?: string | null }): Promise<void> {
+  await apiClient.post<unknown>(API_ENDPOINTS.authLogout, {
+    device_token: input?.deviceToken ?? null,
+  });
 }

@@ -7,13 +7,12 @@ import { VendorTabKey } from '../../types/workflow';
 import { formatCurrency, prettifyStatus } from '../../utils/format';
 import {
   formatRelativeTime,
-  groupVendorOrderStatus,
-  isSameCalendarDay,
   resolveVendorDisplayName,
 } from '../../utils/vendor';
 import { NotificationCenterSheet } from '../shared/NotificationCenterSheet';
 import { SectionTitle, StatusBadge } from '../shared/ui';
 import { tokens } from '../shared/tokens';
+import { VendorSidebarSheet } from './VendorSidebarSheet';
 
 interface VendorDashboardScreenProps {
   onGoToTab: (tab: VendorTabKey) => void;
@@ -25,7 +24,8 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
     profile,
     buildings,
     allProducts,
-    orders,
+    orderCounts,
+    dashboardOrderSummary,
     notifications,
     unreadNotificationCount,
     notificationsLoading,
@@ -33,12 +33,13 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
     isLoading,
     error,
     refreshAll,
-    refreshNotifications,
     refreshOrders,
+    refreshNotifications,
     markNotificationRead,
     toggleStoreOpen,
   } = useVendorApp();
   const [notificationsVisible, setNotificationsVisible] = useState(false);
+  const [sidebarVisible, setSidebarVisible] = useState(false);
 
   useEffect(() => {
     void refreshAll();
@@ -47,27 +48,15 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
   const storeName = useMemo(() => resolveVendorDisplayName(profile?.name ?? null, buildings), [buildings, profile?.name]);
   const isStoreOpen = profile?.store_open ?? false;
 
-  const openOrders = useMemo(
-    () => orders.filter((order) => groupVendorOrderStatus(order.status) === 'pending'),
-    [orders],
-  );
-  const completedOrders = useMemo(
-    () => orders.filter((order) => groupVendorOrderStatus(order.status) === 'completed'),
-    [orders],
-  );
-  const todaysOrders = useMemo(
-    () => orders.filter((order) => isSameCalendarDay(order.placed_at)).length,
-    [orders],
-  );
+  const pendingOrdersCount = orderCounts.pending;
+  const completedOrdersCount = orderCounts.completed;
+  const todaysOrders = dashboardOrderSummary?.today_orders ?? 0;
   const activeProducts = useMemo(
     () => allProducts.filter((product) => product.is_available),
     [allProducts],
   );
-  const totalSales = useMemo(
-    () => completedOrders.reduce((sum, order) => sum + order.total, 0),
-    [completedOrders],
-  );
-  const recentOrders = useMemo(() => orders.slice(0, 2), [orders]);
+  const totalSales = dashboardOrderSummary?.total_sales ?? 0;
+  const recentOrders = dashboardOrderSummary?.recent_orders ?? [];
   const activePartners = useMemo(
     () => deliveryPartners.filter((partner) => partner.partner_active && partner.app_access_active),
     [deliveryPartners],
@@ -76,11 +65,11 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
   const handleNotificationOpen = async (notificationId: string, orderId: number | null): Promise<void> => {
     try {
       await markNotificationRead(notificationId);
+      await refreshOrders({ force: true });
     } catch {
       return;
     }
 
-    await refreshOrders();
     onOpenOrderFromNotification(orderId);
     setNotificationsVisible(false);
     onGoToTab('orders');
@@ -95,13 +84,13 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
     },
     {
       icon: 'time-outline' as const,
-      value: openOrders.length,
+      value: pendingOrdersCount,
       label: 'Pending',
       color: '#f59f0b',
     },
     {
       icon: 'checkmark-circle-outline' as const,
-      value: completedOrders.length,
+      value: completedOrdersCount,
       label: 'Completed',
       color: '#28c66f',
     },
@@ -116,13 +105,16 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
           <RefreshControl
             refreshing={isLoading}
             onRefresh={() => {
-              void refreshAll();
+              void refreshAll({ force: true });
             }}
           />
         }
       >
         <View style={styles.heroCard}>
           <View style={styles.heroTopRow}>
+            <Pressable style={styles.utilityButton} onPress={() => setSidebarVisible(true)}>
+              <Ionicons name="menu-outline" size={20} color="#ffffff" />
+            </Pressable>
             <View style={styles.heroTitleWrap}>
               <Text style={styles.greeting}>Welcome back</Text>
               <Text style={styles.storeName}>{storeName}</Text>
@@ -190,7 +182,7 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
           </View>
           <View style={styles.quickActionBody}>
             <Text style={styles.quickActionTitle}>View Orders</Text>
-            <Text style={styles.quickActionSub}>{openOrders.length} orders in progress</Text>
+            <Text style={styles.quickActionSub}>{pendingOrdersCount} orders in progress</Text>
           </View>
           <Ionicons name="chevron-forward" size={18} color="#c2c2cb" />
         </Pressable>
@@ -213,6 +205,39 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
           <View style={styles.quickActionBody}>
             <Text style={styles.quickActionTitle}>Delivery Boys</Text>
             <Text style={styles.quickActionSub}>{activePartners.length} partners active</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="#c2c2cb" />
+        </Pressable>
+
+        <Pressable style={styles.quickActionCard} onPress={() => onGoToTab('wallet')}>
+          <View style={[styles.quickActionIcon, { backgroundColor: '#fff1e6' }]}>
+            <Ionicons name="wallet-outline" size={20} color={tokens.colors.vendorPrimary} />
+          </View>
+          <View style={styles.quickActionBody}>
+            <Text style={styles.quickActionTitle}>Wallet Top-up</Text>
+            <Text style={styles.quickActionSub}>Add amount in user or office wallet</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="#c2c2cb" />
+        </Pressable>
+
+        <Pressable style={styles.quickActionCard} onPress={() => onGoToTab('manual')}>
+          <View style={[styles.quickActionIcon, { backgroundColor: '#fff1e6' }]}>
+            <Ionicons name="create-outline" size={20} color={tokens.colors.vendorPrimary} />
+          </View>
+          <View style={styles.quickActionBody}>
+            <Text style={styles.quickActionTitle}>Manual Orders</Text>
+            <Text style={styles.quickActionSub}>Add tea and coffee entry for offices without an office account</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="#c2c2cb" />
+        </Pressable>
+
+        <Pressable style={styles.quickActionCard} onPress={() => onGoToTab('reports')}>
+          <View style={[styles.quickActionIcon, { backgroundColor: '#eef2ff' }]}>
+            <Ionicons name="bar-chart-outline" size={20} color="#6a74f8" />
+          </View>
+          <View style={styles.quickActionBody}>
+            <Text style={styles.quickActionTitle}>Reports</Text>
+            <Text style={styles.quickActionSub}>Check office-wise pending tea and coffee data and export PDF</Text>
           </View>
           <Ionicons name="chevron-forward" size={18} color="#c2c2cb" />
         </Pressable>
@@ -273,11 +298,20 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
         isLoading={notificationsLoading}
         onClose={() => setNotificationsVisible(false)}
         onRefresh={() => {
-          void refreshNotifications();
+          void refreshNotifications({ force: true });
         }}
         onSelectNotification={(notification) => {
           void handleNotificationOpen(notification.id, notification.order_id);
         }}
+      />
+
+      <VendorSidebarSheet
+        visible={sidebarVisible}
+        activeTab="dashboard"
+        title={storeName}
+        subtitle={profile?.email ?? profile?.mobile ?? 'Vendor shortcuts'}
+        onClose={() => setSidebarVisible(false)}
+        onSelectTab={onGoToTab}
       />
     </View>
   );
@@ -301,12 +335,20 @@ const styles = StyleSheet.create({
   },
   heroTopRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
+  },
+  utilityButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
   },
   heroTitleWrap: {
     flex: 1,
-    paddingRight: 8,
+    paddingRight: 10,
   },
   greeting: {
     color: '#ffe5d3',

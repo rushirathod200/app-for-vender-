@@ -10,6 +10,11 @@ import {
 } from '../utils/parsers';
 import { apiClient } from './httpClient';
 
+export interface NotificationIndexResult {
+  notifications: AppNotification[];
+  unreadCount: number | null;
+}
+
 function toRecordMap(value: unknown): Record<string, string | number> {
   if (!isRecord(value)) {
     return {};
@@ -71,12 +76,23 @@ function normalizeNotification(entry: unknown): AppNotification | null {
   };
 }
 
-export async function fetchNotifications(endpoint: string): Promise<AppNotification[]> {
+export async function fetchNotificationIndex(endpoint: string): Promise<NotificationIndexResult> {
   const payload = await apiClient.get<unknown>(endpoint);
+  const meta = isRecord(payload) && isRecord(payload.meta) ? payload.meta : null;
 
-  return extractCollection(payload)
-    .map(normalizeNotification)
-    .filter((entry): entry is AppNotification => !!entry);
+  return {
+    notifications: extractCollection(payload)
+      .map(normalizeNotification)
+      .filter((entry): entry is AppNotification => !!entry),
+    unreadCount: meta && Object.prototype.hasOwnProperty.call(meta, 'unread_count')
+      ? toNumberValue(meta.unread_count, 0)
+      : null,
+  };
+}
+
+export async function fetchNotifications(endpoint: string): Promise<AppNotification[]> {
+  const result = await fetchNotificationIndex(endpoint);
+  return result.notifications;
 }
 
 export async function fetchUnreadNotificationCount(endpoint: string): Promise<number> {
@@ -101,6 +117,10 @@ export async function fetchVendorNotifications(): Promise<AppNotification[]> {
   return fetchNotifications(API_ENDPOINTS.vendorNotifications);
 }
 
+export async function fetchVendorNotificationIndex(): Promise<NotificationIndexResult> {
+  return fetchNotificationIndex(API_ENDPOINTS.vendorNotifications);
+}
+
 export async function fetchVendorUnreadNotificationCount(): Promise<number> {
   return fetchUnreadNotificationCount(API_ENDPOINTS.vendorNotificationsUnreadCount);
 }
@@ -111,6 +131,10 @@ export async function markVendorNotificationRead(notificationId: string): Promis
 
 export async function fetchDeliveryNotifications(): Promise<AppNotification[]> {
   return fetchNotifications(API_ENDPOINTS.deliveryNotifications);
+}
+
+export async function fetchDeliveryNotificationIndex(): Promise<NotificationIndexResult> {
+  return fetchNotificationIndex(API_ENDPOINTS.deliveryNotifications);
 }
 
 export async function fetchDeliveryUnreadNotificationCount(): Promise<number> {

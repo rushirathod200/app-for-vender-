@@ -1,8 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  KeyboardAvoidingView,
   Linking,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -11,18 +13,22 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../context/AuthContext';
 import { useDeliveryApp } from '../../context/DeliveryAppContext';
 import { DeliveryOrder } from '../../types/delivery';
-import { OrderStatus } from '../../types/vendor';
-import { prettifyStatus } from '../../utils/format';
+import { OrderStatus, QuickRequestPaymentMethod } from '../../types/vendor';
+import { formatCurrency, prettifyStatus } from '../../utils/format';
+import { useAutoClearValue } from '../../utils/useAutoClearValue';
 import { formatRelativeTime } from '../../utils/vendor';
+import { useAndroidBackHandler } from '../../utils/useAndroidBackHandler';
 import { NotificationCenterSheet } from '../shared/NotificationCenterSheet';
-import { ActionButton, SegmentTabs, StatusBadge } from '../shared/ui';
+import { ActionButton, QuantityStepper, SegmentTabs, StatusBadge } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
 type DeliveryTab = 'pending' | 'completed' | 'cancelled';
+const ORDER_PAGE_SIZE = 10;
 
 const tabs: Array<{ key: DeliveryTab; label: string }> = [
   { key: 'pending', label: 'Pending' },
@@ -32,17 +38,23 @@ const tabs: Array<{ key: DeliveryTab; label: string }> = [
 
 interface DeliveryOrdersScreenProps {
   highlightedOrderId?: number | null;
+  notificationTapRequestId?: number;
   onHighlightedOrderIdChange?: (orderId: number | null) => void;
+  onOpenManualOrders?: () => void;
 }
 
 export function DeliveryOrdersScreen({
   highlightedOrderId: controlledHighlightedOrderId,
+  notificationTapRequestId = 0,
   onHighlightedOrderIdChange,
+  onOpenManualOrders,
 }: DeliveryOrdersScreenProps = {}) {
+  const insets = useSafeAreaInsets();
   const { logout } = useAuth();
   const {
     profile,
-    orders,
+    ordersByTab,
+    orderCounts,
     notifications,
     unreadNotificationCount,
     isLoading,
@@ -54,6 +66,7 @@ export function DeliveryOrdersScreen({
     refreshNotifications,
     markNotificationRead,
     updateOrderStatus,
+    completeQuickRequest,
   } = useDeliveryApp();
 
   const [activeTab, setActiveTab] = useState<DeliveryTab>('pending');
@@ -69,29 +82,167 @@ export function DeliveryOrdersScreen({
   const [cancelTargetOrderId, setCancelTargetOrderId] = useState<number | null>(null);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelReasonError, setCancelReasonError] = useState<string | null>(null);
+  const [quickRequestTargetOrderId, setQuickRequestTargetOrderId] = useState<number | null>(null);
+  const [quickRequestTeaQty, setQuickRequestTeaQty] = useState(0);
+  const [quickRequestCoffeeQty, setQuickRequestCoffeeQty] = useState(0);
+  const [quickRequestPaymentMethod, setQuickRequestPaymentMethod] = useState<QuickRequestPaymentMethod>('cod');
+  const [quickRequestError, setQuickRequestError] = useState<string | null>(null);
+  const [visibleCounts, setVisibleCounts] = useState<Record<DeliveryTab, number>>({
+    pending: ORDER_PAGE_SIZE,
+    completed: ORDER_PAGE_SIZE,
+    cancelled: ORDER_PAGE_SIZE,
+  });
+  const modalBottomPadding = Math.max(insets.bottom, 14) + 8;
+  const appliedNotificationTapRef = useRef(0);
+
+  useAutoClearValue(actionError, () => setActionError(null));
 
   useEffect(() => {
     void refreshAll();
   }, []);
 
-  const filteredOrders = useMemo(
-    () => orders.filter((order) => groupDeliveryOrderStatus(order.status) === activeTab),
-    [orders, activeTab],
+  useEffect(() => {
+    if (!notificationTapRequestId) {
+      return;
+    }
+
+    void refreshOrders({ force: true });
+  }, [highlightedOrderId, notificationTapRequestId]);
+
+  useAndroidBackHandler(
+    () => {
+      setActiveTab('pending');
+      return true;
+    },
+    { enabled: activeTab !== 'pending', priority: 10 },
   );
 
-  const counts = useMemo(
-    () => ({
-      pending: orders.filter((order) => groupDeliveryOrderStatus(order.status) === 'pending').length,
-      completed: orders.filter((order) => groupDeliveryOrderStatus(order.status) === 'completed').length,
-      cancelled: orders.filter((order) => groupDeliveryOrderStatus(order.status) === 'cancelled').length,
-    }),
-    [orders],
+  useEffect(() => {
+    if (!highlightedOrderId || appliedNotificationTapRef.current === notificationTapRequestId) {
+      return;
+    }
+
+    const matchedOrder = Object.values(ordersByTab)
+      .flat()
+      .find((order) => order.id === highlightedOrderId);
+
+    if (!matchedOrder) {
+      return;
+    }
+
+    const nextTab = groupDeliveryOrderStatus(matchedOrder.status);
+    const matchIndex = ordersByTab[nextTab].findIndex((order) => order.id === highlightedOrderId);
+    if (matchIndex >= 0) {
+      const requiredVisibleCount = Math.max(
+        ORDER_PAGE_SIZE,
+        Math.ceil((matchIndex + 1) / ORDER_PAGE_SIZE) * ORDER_PAGE_SIZE,
+      );
+      setVisibleCounts((current) => (
+        current[nextTab] >= requiredVisibleCount
+          ? current
+          : { ...current, [nextTab]: requiredVisibleCount }
+      ));
+    }
+
+    setActiveTab(nextTab);
+    appliedNotificationTapRef.current = notificationTapRequestId;
+  }, [highlightedOrderId, notificationTapRequestId, ordersByTab]);
+
+  const filteredOrders = useMemo(() => ordersByTab[activeTab], [activeTab, ordersByTab]);
+  const visibleOrders = useMemo(
+    () => filteredOrders.slice(0, visibleCounts[activeTab]),
+    [activeTab, filteredOrders, visibleCounts],
   );
+  const hasMoreOrders = visibleOrders.length < filteredOrders.length;
 
   const cancelTargetOrder = useMemo(
-    () => (cancelTargetOrderId ? orders.find((order) => order.id === cancelTargetOrderId) ?? null : null),
-    [cancelTargetOrderId, orders],
+    () =>
+      cancelTargetOrderId
+        ? (Object.values(ordersByTab).flat().find((order) => order.id === cancelTargetOrderId) ?? null)
+        : null,
+    [cancelTargetOrderId, ordersByTab],
   );
+
+  const quickRequestTargetOrder = useMemo(
+    () =>
+      quickRequestTargetOrderId
+        ? (Object.values(ordersByTab).flat().find((order) => order.id === quickRequestTargetOrderId) ?? null)
+        : null,
+    [ordersByTab, quickRequestTargetOrderId],
+  );
+  const topMessages = useMemo(
+    () => Array.from(new Set([error, actionError].filter((message): message is string => !!message))),
+    [actionError, error],
+  );
+
+  const quickRequestTotalPreview = useMemo(() => {
+    if (!quickRequestTargetOrder?.quick_request) {
+      return 0;
+    }
+
+    return roundCurrency(
+      (quickRequestTeaQty * quickRequestTargetOrder.quick_request.tea_price)
+        + (quickRequestCoffeeQty * quickRequestTargetOrder.quick_request.coffee_price),
+    );
+  }, [quickRequestCoffeeQty, quickRequestTargetOrder, quickRequestTeaQty]);
+
+  const quickRequestPaymentOptions = useMemo<Array<{
+    key: QuickRequestPaymentMethod;
+    label: string;
+    enabled: boolean;
+    balance?: number;
+    creditEnabled?: boolean;
+  }>>(() => {
+    const quickRequest = quickRequestTargetOrder?.quick_request;
+    if (!quickRequest) {
+      return [{ key: 'cod', label: 'Cash', enabled: true }];
+    }
+
+    const options: Array<{
+      key: QuickRequestPaymentMethod;
+      label: string;
+      enabled: boolean;
+      balance?: number;
+      creditEnabled?: boolean;
+    }> = [];
+
+    if (quickRequest.office_wallet_available) {
+      options.push({
+        key: 'office_wallet',
+        label: 'Office Wallet',
+        enabled: quickRequest.office_wallet_credit_enabled || quickRequest.office_wallet_balance >= quickRequestTotalPreview,
+        balance: quickRequest.office_wallet_balance,
+        creditEnabled: quickRequest.office_wallet_credit_enabled,
+      });
+    }
+
+    if (quickRequest.wallet_available && quickRequest.wallet_balance > 0) {
+      options.push({
+        key: 'wallet',
+        label: 'Personal Wallet',
+        enabled: quickRequest.wallet_balance >= quickRequestTotalPreview,
+        balance: quickRequest.wallet_balance,
+      });
+    }
+
+    options.push({ key: 'cod', label: 'Cash', enabled: true });
+
+    return options;
+  }, [quickRequestTargetOrder, quickRequestTotalPreview]);
+
+  useEffect(() => {
+    if (!quickRequestTargetOrder) {
+      return;
+    }
+
+    const selectedOption = quickRequestPaymentOptions.find((option) => option.key === quickRequestPaymentMethod);
+    if (selectedOption?.enabled) {
+      return;
+    }
+
+    const fallbackOption = quickRequestPaymentOptions.find((option) => option.enabled);
+    setQuickRequestPaymentMethod(fallbackOption?.key ?? 'cod');
+  }, [quickRequestPaymentMethod, quickRequestPaymentOptions, quickRequestTargetOrder]);
 
   const handleMarkCompleted = async (orderId: number): Promise<void> => {
     const key = `${orderId}:complete`;
@@ -102,6 +253,62 @@ export function DeliveryOrdersScreen({
       await updateOrderStatus(orderId, 'delivered');
     } catch (updateError) {
       setActionError(updateError instanceof Error ? updateError.message : 'Could not complete delivery.');
+    } finally {
+      setUpdatingKey(null);
+    }
+  };
+
+  const openQuickRequestModal = (order: DeliveryOrder): void => {
+    setQuickRequestTargetOrderId(order.id);
+    setQuickRequestTeaQty(order.quick_request?.suggested_tea_qty ?? 0);
+    setQuickRequestCoffeeQty(order.quick_request?.suggested_coffee_qty ?? 0);
+    setQuickRequestPaymentMethod('cod');
+    setQuickRequestError(null);
+  };
+
+  const closeQuickRequestModal = (): void => {
+    if (updatingKey) {
+      return;
+    }
+
+    setQuickRequestTargetOrderId(null);
+    setQuickRequestTeaQty(0);
+    setQuickRequestCoffeeQty(0);
+    setQuickRequestPaymentMethod('cod');
+    setQuickRequestError(null);
+  };
+
+  const submitQuickRequestCompletion = async (): Promise<void> => {
+    if (!quickRequestTargetOrder) {
+      return;
+    }
+
+    if (quickRequestTeaQty + quickRequestCoffeeQty <= 0) {
+      setQuickRequestError('Add at least one tea or coffee.');
+      return;
+    }
+
+    const key = `${quickRequestTargetOrder.id}:quick-request-complete`;
+    setUpdatingKey(key);
+    setActionError(null);
+    setQuickRequestError(null);
+
+    try {
+      await completeQuickRequest(quickRequestTargetOrder.id, {
+        tea_qty: quickRequestTeaQty,
+        coffee_qty: quickRequestCoffeeQty,
+        payment_method: quickRequestPaymentMethod,
+      });
+      setQuickRequestTargetOrderId(null);
+      setQuickRequestTeaQty(0);
+      setQuickRequestCoffeeQty(0);
+      setQuickRequestPaymentMethod('cod');
+      setQuickRequestError(null);
+    } catch (updateError) {
+      const message =
+        updateError instanceof Error ? updateError.message : 'Could not complete quick request.';
+      setActionError(message);
+      setQuickRequestError(message);
     } finally {
       setUpdatingKey(null);
     }
@@ -169,11 +376,11 @@ export function DeliveryOrdersScreen({
   const handleNotificationOpen = async (notificationId: string, orderId: number | null): Promise<void> => {
     try {
       await markNotificationRead(notificationId);
+      await refreshOrders({ force: true });
     } catch {
       return;
     }
 
-    await refreshOrders();
     setHighlightedOrderId(orderId);
     setNotificationsVisible(false);
   };
@@ -181,13 +388,13 @@ export function DeliveryOrdersScreen({
   return (
     <View style={styles.root}>
       <ScrollView
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, styles.contentGrow]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
-            refreshing={ordersLoading || isLoading}
+            refreshing={isLoading || ordersLoading || notificationsLoading}
             onRefresh={() => {
-              void refreshOrders();
+              void refreshAll({ force: true });
             }}
           />
         }
@@ -198,7 +405,7 @@ export function DeliveryOrdersScreen({
               <Text style={styles.roleText}>{profile?.name ?? 'Delivery Partner'}</Text>
               <Text style={styles.title}>My Deliveries</Text>
               <Text style={styles.heroSubText}>
-                {profile?.active_order_count ?? counts.pending} active delivery orders
+                {profile?.active_order_count ?? orderCounts.pending} active delivery orders
               </Text>
             </View>
 
@@ -230,23 +437,33 @@ export function DeliveryOrdersScreen({
           </View>
 
           <SegmentTabs
-            tabs={tabs.map((tab) => ({ key: tab.key, label: tab.label, count: counts[tab.key] }))}
+            tabs={tabs.map((tab) => ({ key: tab.key, label: tab.label, count: orderCounts[tab.key] }))}
             activeKey={activeTab}
             onChange={(key) => setActiveTab(key as DeliveryTab)}
             palette="delivery"
           />
+
+          <ActionButton
+            label="Manual Order"
+            tone="muted"
+            icon="create-outline"
+            onPress={() => onOpenManualOrders?.()}
+            style={styles.manualOrderButton}
+          />
         </View>
 
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
-        {actionError ? <Text style={styles.errorText}>{actionError}</Text> : null}
+        {topMessages.map((message) => (
+          <Text key={message} style={styles.errorText}>{message}</Text>
+        ))}
         {filteredOrders.length === 0 ? <Text style={styles.emptyText}>No deliveries in this tab.</Text> : null}
 
-        {filteredOrders.map((order) => {
+        {visibleOrders.map((order) => {
           const nextStatuses = order.allowed_transitions.length
             ? order.allowed_transitions
             : getDeliveryTransitions(order.status);
           const showCompleteAction = nextStatuses.includes('delivered');
           const canCancel = nextStatuses.includes('cancelled');
+          const isQuickRequest = order.order_channel === 'office_quick_request';
 
           return (
             <View
@@ -277,6 +494,14 @@ export function DeliveryOrdersScreen({
                 <Text style={styles.timeText}>{formatRelativeTime(order.placed_at)}</Text>
               </View>
 
+              {isQuickRequest ? (
+                <View style={styles.quickRequestBadge}>
+                  <Text style={styles.quickRequestBadgeText}>
+                    Quick Request{order.quick_request?.requested_label ? ` • ${order.quick_request.requested_label}` : ''}
+                  </Text>
+                </View>
+              ) : null}
+
               <View style={styles.locationTagGreen}>
                 <Text style={styles.locationTagLabel}>PICKUP FROM</Text>
                 <Text style={styles.locationTagText}>{buildPickupLabel(order)}</Text>
@@ -288,11 +513,17 @@ export function DeliveryOrdersScreen({
               </View>
 
               <View style={styles.itemsBox}>
-                {order.items.map((item) => (
-                  <Text key={`${order.id}-${item.id}-${item.title}`} style={styles.itemText}>
-                    • {item.title} x{item.qty}
+                {order.items.length > 0 ? (
+                  order.items.map((item) => (
+                    <Text key={`${order.id}-${item.id}-${item.title}`} style={styles.itemText}>
+                      • {item.title} x{item.qty}
+                    </Text>
+                  ))
+                ) : isQuickRequest ? (
+                  <Text style={styles.itemText}>
+                    • Requested: {order.quick_request?.requested_label ?? 'Tea / Coffee'}
                   </Text>
-                ))}
+                ) : null}
               </View>
 
               {order.notes ? (
@@ -312,7 +543,7 @@ export function DeliveryOrdersScreen({
               <View style={styles.valueRow}>
                 <Text style={styles.valueLabel}>Order Value</Text>
                 <Text style={[styles.valueText, order.status === 'cancelled' ? styles.cancelledValue : null]}>
-                  ₹{order.total}
+                  {isQuickRequest && order.quick_request?.payment_pending ? 'Pending' : `₹${order.total}`}
                 </Text>
               </View>
 
@@ -320,11 +551,24 @@ export function DeliveryOrdersScreen({
                 <View style={styles.actionsRow}>
                   {showCompleteAction ? (
                     <ActionButton
-                      label={updatingKey === `${order.id}:complete` ? 'Completing...' : 'Mark Completed'}
+                      label={
+                        isQuickRequest
+                          ? updatingKey === `${order.id}:quick-request-complete`
+                            ? 'Saving...'
+                            : 'Complete Quick Request'
+                          : updatingKey === `${order.id}:complete`
+                            ? 'Completing...'
+                            : 'Mark Completed'
+                      }
                       tone="success"
                       style={styles.mainAction}
                       disabled={updatingKey !== null}
                       onPress={() => {
+                        if (isQuickRequest) {
+                          openQuickRequestModal(order);
+                          return;
+                        }
+
                         void handleMarkCompleted(order.id);
                       }}
                     />
@@ -345,6 +589,24 @@ export function DeliveryOrdersScreen({
             </View>
           );
         })}
+
+        {hasMoreOrders ? (
+          <Pressable
+            style={styles.loadMoreButton}
+            onPress={() => {
+              setVisibleCounts((current) => ({
+                ...current,
+                [activeTab]: current[activeTab] + ORDER_PAGE_SIZE,
+              }));
+            }}
+          >
+            <Text style={styles.loadMoreText}>Load 10 more</Text>
+            <Text style={styles.loadMoreMeta}>
+              Showing {visibleOrders.length} of {filteredOrders.length} orders
+            </Text>
+          </Pressable>
+        ) : null}
+
       </ScrollView>
 
       <NotificationCenterSheet
@@ -357,74 +619,231 @@ export function DeliveryOrdersScreen({
         isLoading={notificationsLoading}
         onClose={() => setNotificationsVisible(false)}
         onRefresh={() => {
-          void refreshNotifications();
+          void refreshNotifications({ force: true });
         }}
         onSelectNotification={(notification) => {
           void handleNotificationOpen(notification.id, notification.order_id);
         }}
       />
       <Modal
+        visible={!!quickRequestTargetOrder}
+        animationType="slide"
+        transparent
+        onRequestClose={closeQuickRequestModal}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior="padding"
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 18 : 12}
+        >
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeQuickRequestModal} />
+
+          <ScrollView
+            contentContainerStyle={styles.modalScrollContent}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={[styles.modalSheet, { paddingBottom: modalBottomPadding }]}>
+              <View style={styles.modalHeader}>
+                <View style={styles.modalTitleWrap}>
+                  <Ionicons name="cafe-outline" size={22} color={tokens.colors.deliveryPrimary} />
+                  <Text style={styles.modalTitle}>Complete Quick Request</Text>
+                </View>
+
+                <Pressable style={styles.closeModalButton} onPress={closeQuickRequestModal} disabled={!!updatingKey}>
+                  <Ionicons name="close" size={18} color="#7f7f89" />
+                </Pressable>
+              </View>
+
+              <Text style={styles.modalPrompt}>
+                {quickRequestTargetOrder?.quick_request?.requested_label
+                  ? `Requested: ${quickRequestTargetOrder.quick_request.requested_label}`
+                  : 'Enter the final tea and coffee count for this request.'}
+              </Text>
+
+              <View style={styles.quickRequestRow}>
+                <View style={styles.quickRequestField}>
+                  <QuantityStepper
+                    label="Tea Qty"
+                    value={quickRequestTeaQty}
+                    onChange={(value) => {
+                      setQuickRequestTeaQty(value);
+                      if (quickRequestError) {
+                        setQuickRequestError(null);
+                      }
+                    }}
+                    tone="delivery"
+                  />
+                </View>
+
+                <View style={styles.quickRequestField}>
+                  <QuantityStepper
+                    label="Coffee Qty"
+                    value={quickRequestCoffeeQty}
+                    onChange={(value) => {
+                      setQuickRequestCoffeeQty(value);
+                      if (quickRequestError) {
+                        setQuickRequestError(null);
+                      }
+                    }}
+                    tone="delivery"
+                  />
+                </View>
+              </View>
+
+              <View style={styles.quickRequestPreviewCard}>
+                <Text style={styles.quickRequestPreviewLabel}>Total Preview</Text>
+                <Text style={styles.quickRequestPreviewValue}>{formatCurrency(quickRequestTotalPreview)}</Text>
+              </View>
+
+              <View style={styles.paymentOptionsWrap}>
+                <Text style={styles.quickRequestLabel}>Cut payment from</Text>
+
+                <View style={styles.paymentOptionsRow}>
+                  {quickRequestPaymentOptions.map((option) => (
+                    <Pressable
+                      key={option.key}
+                      style={[
+                        styles.paymentOption,
+                        quickRequestPaymentMethod === option.key ? styles.paymentOptionActive : null,
+                        !option.enabled ? styles.paymentOptionDisabled : null,
+                      ]}
+                      onPress={() => {
+                        if (!option.enabled) {
+                          return;
+                        }
+
+                        setQuickRequestPaymentMethod(option.key);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.paymentOptionText,
+                          quickRequestPaymentMethod === option.key ? styles.paymentOptionTextActive : null,
+                          !option.enabled ? styles.paymentOptionTextDisabled : null,
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                {quickRequestPaymentOptions
+                  .filter((option) => option.key !== 'cod' && typeof option.balance === 'number')
+                  .map((option) => (
+                    <Text key={`${option.key}-balance`} style={styles.paymentHintText}>
+                      {option.label}: {formatCurrency(option.balance ?? 0)}
+                      {option.key === 'office_wallet' && option.creditEnabled
+                        ? ` available. Credit is ON, so the wallet can go to ${formatCurrency((option.balance ?? 0) - quickRequestTotalPreview)}.`
+                        : !option.enabled && quickRequestTotalPreview > 0
+                          ? ' available, not enough for this total.'
+                          : ''}
+                    </Text>
+                  ))}
+              </View>
+
+              {quickRequestError ? <Text style={styles.errorText}>{quickRequestError}</Text> : null}
+
+              <View style={styles.modalActionsRow}>
+                <ActionButton
+                  label="Back"
+                  tone="muted"
+                  style={styles.mainAction}
+                  disabled={!!updatingKey}
+                  onPress={closeQuickRequestModal}
+                />
+                <ActionButton
+                  label={
+                    updatingKey === `${quickRequestTargetOrder?.id}:quick-request-complete`
+                      ? 'Saving...'
+                      : 'Complete'
+                  }
+                  tone="success"
+                  style={styles.mainAction}
+                  disabled={!!updatingKey}
+                  onPress={() => {
+                    void submitQuickRequestCompletion();
+                  }}
+                />
+              </View>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
+      <Modal
         visible={!!cancelTargetOrder}
         animationType="slide"
         transparent
         onRequestClose={closeCancelReasonModal}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 18 : 0}
+        >
           <Pressable style={StyleSheet.absoluteFill} onPress={closeCancelReasonModal} />
 
-          <View style={styles.modalSheet}>
-            <View style={styles.modalHeader}>
-              <View style={styles.modalTitleWrap}>
-                <Ionicons name="alert-circle-outline" size={22} color={tokens.colors.danger} />
-                <Text style={styles.modalTitle}>Cancel Order</Text>
+          <ScrollView
+            contentContainerStyle={styles.modalScrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={[styles.modalSheet, { paddingBottom: modalBottomPadding }]}>
+              <View style={styles.modalHeader}>
+                <View style={styles.modalTitleWrap}>
+                  <Ionicons name="alert-circle-outline" size={22} color={tokens.colors.danger} />
+                  <Text style={styles.modalTitle}>Cancel Order</Text>
+                </View>
+
+                <Pressable style={styles.closeModalButton} onPress={closeCancelReasonModal} disabled={!!updatingKey}>
+                  <Ionicons name="close" size={18} color="#7f7f89" />
+                </Pressable>
               </View>
 
-              <Pressable style={styles.closeModalButton} onPress={closeCancelReasonModal} disabled={!!updatingKey}>
-                <Ionicons name="close" size={18} color="#7f7f89" />
-              </Pressable>
-            </View>
+              <Text style={styles.modalPrompt}>
+                {cancelTargetOrder ? `Why are you cancelling ${cancelTargetOrder.order_no}?` : 'Why are you cancelling this order?'}
+              </Text>
 
-            <Text style={styles.modalPrompt}>
-              {cancelTargetOrder ? `Why are you cancelling ${cancelTargetOrder.order_no}?` : 'Why are you cancelling this order?'}
-            </Text>
-
-            <TextInput
-              value={cancelReason}
-              onChangeText={(value) => {
-                setCancelReason(value);
-                if (cancelReasonError) {
-                  setCancelReasonError(null);
-                }
-              }}
-              placeholder="Enter cancel reason"
-              placeholderTextColor="#9a9aa3"
-              multiline
-              style={styles.reasonInput}
-              textAlignVertical="top"
-            />
-
-            {cancelReasonError ? <Text style={styles.errorText}>{cancelReasonError}</Text> : null}
-
-            <View style={styles.modalActionsRow}>
-              <ActionButton
-                label="Back"
-                tone="muted"
-                style={styles.mainAction}
-                disabled={!!updatingKey}
-                onPress={closeCancelReasonModal}
-              />
-              <ActionButton
-                label={updatingKey === `${cancelTargetOrder?.id}:cancelled` ? 'Cancelling...' : 'Cancel Order'}
-                tone="danger"
-                style={styles.mainAction}
-                disabled={!!updatingKey}
-                onPress={() => {
-                  void submitCancelReason();
+              <TextInput
+                value={cancelReason}
+                onChangeText={(value) => {
+                  setCancelReason(value);
+                  if (cancelReasonError) {
+                    setCancelReasonError(null);
+                  }
                 }}
+                placeholder="Enter cancel reason"
+                placeholderTextColor="#9a9aa3"
+                multiline
+                style={styles.reasonInput}
+                textAlignVertical="top"
               />
+
+              {cancelReasonError ? <Text style={styles.errorText}>{cancelReasonError}</Text> : null}
+
+              <View style={styles.modalActionsRow}>
+                <ActionButton
+                  label="Back"
+                  tone="muted"
+                  style={styles.mainAction}
+                  disabled={!!updatingKey}
+                  onPress={closeCancelReasonModal}
+                />
+                <ActionButton
+                  label={updatingKey === `${cancelTargetOrder?.id}:cancelled` ? 'Cancelling...' : 'Cancel Order'}
+                  tone="danger"
+                  style={styles.mainAction}
+                  disabled={!!updatingKey}
+                  onPress={() => {
+                    void submitCancelReason();
+                  }}
+                />
+              </View>
             </View>
-          </View>
-        </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -474,6 +893,10 @@ function deliveryStatusTone(status: OrderStatus): 'orange' | 'green' | 'red' | '
   return 'orange';
 }
 
+function roundCurrency(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 function buildPickupLabel(order: DeliveryOrder): string {
   if (order.vendor_name && order.building_name) {
     return `${order.vendor_name} • ${order.building_name}`;
@@ -498,11 +921,17 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
     gap: 12,
   },
+  contentGrow: {
+    flexGrow: 1,
+  },
   heroCard: {
     backgroundColor: tokens.colors.deliveryPrimary,
     borderRadius: 22,
     padding: 12,
     gap: 8,
+  },
+  manualOrderButton: {
+    marginTop: 4,
   },
   topRow: {
     flexDirection: 'row',
@@ -587,6 +1016,26 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 10,
   },
+  loadMoreButton: {
+    alignItems: 'center',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#cfd4ff',
+    backgroundColor: '#f6f7ff',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 4,
+  },
+  loadMoreText: {
+    color: tokens.colors.deliveryPrimary,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  loadMoreMeta: {
+    color: '#8b8b95',
+    fontSize: 12,
+    fontWeight: '600',
+  },
   orderCard: {
     backgroundColor: '#f7f7f8',
     borderRadius: 16,
@@ -615,6 +1064,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+  },
+  quickRequestBadge: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    backgroundColor: '#eef2ff',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  quickRequestBadgeText: {
+    color: tokens.colors.deliveryPrimary,
+    fontSize: 11,
+    fontWeight: '800',
   },
   metaText: {
     color: '#4b4b54',
@@ -750,6 +1211,12 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(14,16,23,0.52)',
     justifyContent: 'flex-end',
   },
+  modalScrollContent: {
+    flexGrow: 1,
+    justifyContent: 'flex-end',
+    paddingTop: 28,
+    paddingBottom: 12,
+  },
   modalSheet: {
     backgroundColor: '#f8f8f9',
     borderTopLeftRadius: 24,
@@ -758,6 +1225,7 @@ const styles = StyleSheet.create({
     borderColor: '#e7e7eb',
     padding: 16,
     gap: 12,
+    maxHeight: '88%',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -798,6 +1266,81 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     color: '#232328',
     fontSize: 15,
+    fontWeight: '600',
+  },
+  quickRequestRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  quickRequestField: {
+    flex: 1,
+    gap: 6,
+  },
+  quickRequestLabel: {
+    color: '#5f5f69',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  quickRequestPreviewCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#e5e9f6',
+    backgroundColor: '#f7f9ff',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 4,
+  },
+  quickRequestPreviewLabel: {
+    color: '#5f6b88',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  quickRequestPreviewValue: {
+    color: '#1f2430',
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  paymentOptionsWrap: {
+    gap: 8,
+  },
+  paymentOptionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  paymentOption: {
+    minHeight: 42,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#dfe1e9',
+    backgroundColor: '#f5f5f7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    minWidth: 110,
+    flexGrow: 1,
+  },
+  paymentOptionActive: {
+    borderColor: tokens.colors.deliveryPrimary,
+    backgroundColor: '#eef2ff',
+  },
+  paymentOptionDisabled: {
+    opacity: 0.55,
+  },
+  paymentOptionText: {
+    color: '#71717b',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  paymentOptionTextActive: {
+    color: tokens.colors.deliveryPrimary,
+  },
+  paymentOptionTextDisabled: {
+    color: '#9393a1',
+  },
+  paymentHintText: {
+    color: '#6e7483',
+    fontSize: 12,
     fontWeight: '600',
   },
   modalActionsRow: {

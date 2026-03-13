@@ -4,6 +4,8 @@ import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, Vie
 
 import { useVendorApp } from '../../context/VendorAppContext';
 import { VendorDeliveryPartner } from '../../types/vendor';
+import { useAutoClearValue } from '../../utils/useAutoClearValue';
+import { useAndroidBackHandler } from '../../utils/useAndroidBackHandler';
 import { ActionButton, SectionTitle, StatusBadge } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
@@ -30,11 +32,21 @@ export function VendorDeliveryPartnersScreen() {
       ? deliveryPartners.find((partner) => partner.id === mode.partnerId) ?? null
       : null;
 
+  useAutoClearValue(actionError, () => setActionError(null));
+
   React.useEffect(() => {
     if (mode.screen === 'form' && mode.partnerId && !editingPartner) {
       setMode({ screen: 'list' });
     }
   }, [editingPartner, mode]);
+
+  useAndroidBackHandler(
+    () => {
+      setMode({ screen: 'list' });
+      return true;
+    },
+    { enabled: mode.screen === 'form', priority: 20 },
+  );
 
   if (mode.screen === 'form') {
     return (
@@ -69,7 +81,7 @@ export function VendorDeliveryPartnersScreen() {
           <RefreshControl
             refreshing={deliveryPartnersLoading}
             onRefresh={() => {
-              void refreshDeliveryPartners();
+              void refreshDeliveryPartners({ force: true });
             }}
           />
         }
@@ -79,8 +91,9 @@ export function VendorDeliveryPartnersScreen() {
           subtitle={`${deliveryPartners.filter((partner) => partner.partner_active).length} active partners`}
         />
 
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
-        {actionError ? <Text style={styles.errorText}>{actionError}</Text> : null}
+        {Array.from(new Set([error, actionError].filter((message): message is string => !!message))).map((message) => (
+          <Text key={message} style={styles.errorText}>{message}</Text>
+        ))}
 
         {deliveryPartners.map((partner) => (
           <PartnerCard
@@ -133,11 +146,6 @@ function PartnerCard({
         <StatusBadge label={isActive ? 'ACTIVE' : 'INACTIVE'} tone={isActive ? 'green' : 'red'} />
       </View>
 
-      <View style={styles.deliveryCountBox}>
-        <Text style={styles.deliveryCountLabel}>Active Orders</Text>
-        <Text style={styles.deliveryCountValue}>{partner.active_order_count}</Text>
-      </View>
-
       <View style={styles.partnerActionsRow}>
         <ActionButton label="Edit" tone="muted" icon="create-outline" style={styles.partnerActionButton} onPress={onEdit} />
         <ActionButton
@@ -175,6 +183,8 @@ function DeliveryPartnerForm({
   const [password, setPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useAutoClearValue(error, () => setError(null));
 
   const editing = Boolean(initialName);
   const canSubmit = useMemo(
@@ -348,25 +358,6 @@ const styles = StyleSheet.create({
     color: '#8b8b95',
     fontSize: 12,
     fontWeight: '600',
-    marginTop: 1,
-  },
-  deliveryCountBox: {
-    borderRadius: 12,
-    backgroundColor: '#f1f1f4',
-    borderWidth: 1,
-    borderColor: '#ececf2',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  deliveryCountLabel: {
-    color: '#9a9aa3',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  deliveryCountValue: {
-    color: '#232328',
-    fontSize: 22,
-    fontWeight: '900',
     marginTop: 1,
   },
   partnerActionsRow: {

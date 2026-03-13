@@ -1,6 +1,11 @@
 import React, { createContext, useCallback, useContext, useRef } from 'react';
 
-type NotificationTapHandler = (orderId: number | null) => void;
+interface NotificationTapEvent {
+  orderId: number | null;
+  requestId: number;
+}
+
+type NotificationTapHandler = (event: NotificationTapEvent) => void;
 
 interface NotificationTapContextValue {
   registerHandler: (handler: NotificationTapHandler) => () => void;
@@ -11,16 +16,36 @@ const NotificationTapContext = createContext<NotificationTapContextValue | undef
 
 export function NotificationTapProvider({ children }: { children: React.ReactNode }) {
   const handlerRef = useRef<NotificationTapHandler | null>(null);
+  const pendingEventRef = useRef<NotificationTapEvent | null>(null);
+  const requestIdRef = useRef(0);
 
   const registerHandler = useCallback((handler: NotificationTapHandler) => {
     handlerRef.current = handler;
+
+    if (pendingEventRef.current) {
+      handler(pendingEventRef.current);
+      pendingEventRef.current = null;
+    }
+
     return () => {
       handlerRef.current = null;
     };
   }, []);
 
   const handleNotificationTap = useCallback((orderId: number | null) => {
-    handlerRef.current?.(orderId);
+    requestIdRef.current += 1;
+
+    const event: NotificationTapEvent = {
+      orderId,
+      requestId: requestIdRef.current,
+    };
+
+    if (handlerRef.current) {
+      handlerRef.current(event);
+      return;
+    }
+
+    pendingEventRef.current = event;
   }, []);
 
   const value: NotificationTapContextValue = {

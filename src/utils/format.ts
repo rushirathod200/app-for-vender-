@@ -29,3 +29,13 @@ export function prettifyStatus(status: string): string {
 export function normalizeMobile(input: string): string {
   return input.replace(/\D/g, '').slice(0, 10);
 }
+
+export function normalizeIntegerInput(value: string, fallback = '0'): string {
+  const digits = value.replace(/\D/g, '');
+
+  if (!digits) {
+    return fallback;
+  }
+
+  return String(Number.parseInt(digits, 10));
+}

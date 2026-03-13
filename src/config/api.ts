@@ -1,16 +1,16 @@
-import { Platform } from 'react-native';
+const PLACEHOLDER_API_BASE_URL = 'https://YOUR-NGROK-URL.ngrok-free.app/api';
 
-const DEFAULT_WEB_API_BASE_URL = 'http://127.0.0.1:8000/api';
-const DEFAULT_NATIVE_API_BASE_URL = 'http://192.168.31.160:8000/api';
+function normalizeApiBaseUrl(value: string): string {
+  return value.replace(/\/+$/, '');
+}
 
 const envApiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
 
-export const API_BASE_URL =
-  envApiBaseUrl && envApiBaseUrl.length > 0
-    ? envApiBaseUrl
-    : Platform.OS === 'web'
-      ? DEFAULT_WEB_API_BASE_URL
-      : DEFAULT_NATIVE_API_BASE_URL;
+export const API_BASE_URL = normalizeApiBaseUrl(
+  envApiBaseUrl && envApiBaseUrl.length > 0 ? envApiBaseUrl : PLACEHOLDER_API_BASE_URL,
+);
+
+export const API_BASE_URL_IS_PLACEHOLDER = API_BASE_URL === PLACEHOLDER_API_BASE_URL;
 
 export const API_ENDPOINTS = {
   authLogin: '/auth/login',
@@ -19,6 +19,10 @@ export const API_ENDPOINTS = {
   vendorMe: '/vendor/me',
   vendorProfile: '/vendor/profile',
   vendorBuildings: '/vendor/buildings',
+  vendorWalletTopUp: '/vendor/wallet/top-up',
+  vendorManualOffices: '/vendor/manual-offices',
+  vendorManualOrders: '/vendor/manual-orders',
+  vendorManualReports: '/vendor/manual-reports/offices',
   vendorCatalogProducts: '/vendor/catalog-products',
   vendorMenu: '/vendor/menu',
   vendorOrders: '/vendor/orders',
@@ -28,7 +32,10 @@ export const API_ENDPOINTS = {
   vendorDeliveryPartners: '/vendor/delivery-partners',
   deliveryMe: '/delivery/me',
   deliveryProfile: '/delivery/profile',
+  deliveryManualOffices: '/delivery/manual-offices',
+  deliveryManualOrders: '/delivery/manual-orders',
   deliveryOrders: '/delivery/orders',
+  deliveryQuickRequestCompletion: '/delivery/orders',
   deliveryNotifications: '/delivery/notifications',
   deliveryNotificationsUnreadCount: '/delivery/notifications/unread-count',
   deliveryDeviceToken: '/delivery/device-token',

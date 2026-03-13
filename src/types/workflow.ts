@@ -1,6 +1,14 @@
 export type AppRole = 'vendor' | 'delivery';
 
-export type VendorTabKey = 'dashboard' | 'orders' | 'products' | 'delivery' | 'profile';
+export type VendorTabKey =
+  | 'dashboard'
+  | 'orders'
+  | 'products'
+  | 'delivery'
+  | 'wallet'
+  | 'manual'
+  | 'reports'
+  | 'profile';
 
 export type OrderStatus = 'pending' | 'completed' | 'cancelled';
 

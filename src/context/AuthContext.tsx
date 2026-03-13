@@ -1,3 +1,4 @@
+import * as Device from 'expo-device';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { Platform } from 'react-native';
 
@@ -11,7 +12,11 @@ import {
   setStoredAuthToken,
   setStoredAuthUser,
 } from '../utils/secureStorage';
-import { registerForPushNotificationsAsync } from '../utils/pushNotifications';
+import {
+  addPushTokenRefreshListener,
+  getCurrentPushTokenAsync,
+  registerForPushNotificationsAsync,
+} from '../utils/pushNotifications';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -22,14 +27,25 @@ interface AuthContextValue {
   logout: () => void;
 }
 
-async function registerPushTokenIfAvailable(role: 'vendor' | 'delivery'): Promise<void> {
-  const token = await registerForPushNotificationsAsync();
+function logPushRegistrationError(error: unknown): void {
+  if (__DEV__) {
+    console.warn('Push token registration failed', error);
+  }
+}
+
+async function registerPushTokenIfAvailable(
+  role: 'vendor' | 'delivery',
+  tokenOverride?: string,
+): Promise<void> {
+  const token = tokenOverride ?? (await registerForPushNotificationsAsync());
   if (!token) return;
+  const platform = Platform.OS === 'android' ? 'android' : 'ios';
+  const deviceName = Device.modelName ?? undefined;
 
   if (role === 'vendor') {
-    await registerVendorDeviceToken({ token, platform: 'android' });
+    await registerVendorDeviceToken({ token, platform, device_name: deviceName });
   } else {
-    await registerDeliveryDeviceToken({ token, platform: 'android' });
+    await registerDeliveryDeviceToken({ token, platform, device_name: deviceName });
   }
 }
 
@@ -41,12 +57,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isRestoringSession, setIsRestoringSession] = useState(true);
 
   const logout = useCallback((): void => {
-    void logoutCurrentSession().catch(() => undefined);
-    setUser(null);
-    setToken(null);
-    apiClient.setToken(null);
-    void clearStoredAuth();
-  }, []);
+    const currentToken = token;
+    const currentUser = user;
+
+    void (async () => {
+      try {
+        if (
+          currentToken
+          && currentUser
+          && (currentUser.role === 'vendor' || currentUser.role === 'delivery')
+        ) {
+          apiClient.setToken(currentToken);
+
+          const deviceToken = await getCurrentPushTokenAsync();
+          await logoutCurrentSession({
+            deviceToken,
+          });
+        } else if (currentToken) {
+          apiClient.setToken(currentToken);
+          await logoutCurrentSession();
+        }
+      } catch {
+        // Local logout should still complete even if the API call fails.
+      } finally {
+        setUser(null);
+        setToken(null);
+        apiClient.setToken(null);
+        await clearStoredAuth();
+      }
+    })();
+  }, [token, user]);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,8 +111,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setToken(storedToken);
           setUser(freshUser);
           await setStoredAuthUser(JSON.stringify(freshUser));
-          if (Platform.OS !== 'web') {
-            registerPushTokenIfAvailable(freshUser.role).catch(() => undefined);
+          if (Platform.OS === 'android') {
+            registerPushTokenIfAvailable(freshUser.role).catch(logPushRegistrationError);
           }
         } else {
           void clearStoredAuth();
@@ -129,10 +169,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setStoredAuthUser(JSON.stringify(resolvedUser)),
     ]);
 
-    if (Platform.OS !== 'web') {
-      registerPushTokenIfAvailable(resolvedUser.role).catch(() => undefined);
+    if (Platform.OS === 'android') {
+      registerPushTokenIfAvailable(resolvedUser.role).catch(logPushRegistrationError);
     }
   };
+
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !user || !token) {
+      return;
+    }
+
+    if (user.role !== 'vendor' && user.role !== 'delivery') {
+      return;
+    }
+
+    const userRole = user.role;
+
+    const subscription = addPushTokenRefreshListener((nextToken) => {
+      registerPushTokenIfAvailable(userRole, nextToken).catch(logPushRegistrationError);
+    });
+
+    return () => subscription?.remove();
+  }, [token, user]);
 
   const value = useMemo<AuthContextValue>(
     () => ({

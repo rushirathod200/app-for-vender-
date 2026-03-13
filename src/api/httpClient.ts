@@ -1,4 +1,4 @@
-import { API_BASE_URL } from '../config/api';
+import { API_BASE_URL, API_BASE_URL_IS_PLACEHOLDER } from '../config/api';
 import { extractMessage, isRecord } from '../utils/parsers';
 
 export class ApiError extends Error {
@@ -18,6 +18,14 @@ interface RequestOptions {
   body?: unknown;
   headers?: Record<string, string>;
   query?: Record<string, string | number | boolean | null | undefined>;
+}
+
+function isNgrokUrl(value: string): boolean {
+  try {
+    return new URL(value).hostname.includes('ngrok');
+  } catch {
+    return false;
+  }
 }
 
 class HttpClient {
@@ -48,6 +56,14 @@ class HttpClient {
   }
 
   private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    if (API_BASE_URL_IS_PLACEHOLDER) {
+      throw new ApiError(
+        'Set EXPO_PUBLIC_API_BASE_URL to your current ngrok HTTPS URL ending with /api before using the app.',
+        0,
+        null,
+      );
+    }
+
     const url = this.buildUrl(path, options.query);
     const method = options.method ?? 'GET';
 
@@ -55,6 +71,10 @@ class HttpClient {
       Accept: 'application/json',
       ...options.headers,
     };
+
+    if (isNgrokUrl(API_BASE_URL)) {
+      headers['ngrok-skip-browser-warning'] = 'true';
+    }
 
     let body: BodyInit | undefined;
     if (options.body !== undefined) {

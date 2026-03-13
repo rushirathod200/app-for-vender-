@@ -1,7 +1,8 @@
 import * as Notifications from 'expo-notifications';
-import { StatusBar } from 'expo-status-bar';
+import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import React, { useEffect } from 'react';
-import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, StatusBar as NativeStatusBar, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { theme } from './src/config/theme';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
@@ -55,22 +56,27 @@ function AppBody() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <NotificationTapProvider>
-        <NotificationListener />
-        <View style={styles.root}>
-          <AppBody />
-          <StatusBar style="dark" />
-        </View>
-      </NotificationTapProvider>
-    </AuthProvider>
+    <SafeAreaProvider>
+      <AuthProvider>
+        <NotificationTapProvider>
+          <NotificationListener />
+          <View style={styles.root}>
+            <AppBody />
+            <ExpoStatusBar style="dark" />
+          </View>
+        </NotificationTapProvider>
+      </AuthProvider>
+    </SafeAreaProvider>
   );
 }
+
+const androidTopInset = Platform.OS === 'android' ? NativeStatusBar.currentHeight ?? 0 : 0;
 
 const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: theme.colors.background,
+    paddingTop: androidTopInset,
   },
   loadingContainer: {
     flex: 1,

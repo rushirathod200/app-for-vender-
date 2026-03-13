@@ -9,6 +9,9 @@ export interface AuthUser {
   is_active?: boolean;
   store_open?: boolean;
   delivery_charge?: number;
+  below_minimum_order_mode?: 'charge_delivery' | 'block_order';
+  minimum_order_value?: number;
+  office_wallet_credit_enabled?: boolean;
 }
 
 export interface LoginResult {

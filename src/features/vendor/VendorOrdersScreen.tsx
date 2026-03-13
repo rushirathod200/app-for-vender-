@@ -1,7 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -10,10 +12,12 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useVendorApp } from '../../context/VendorAppContext';
 import { OrderStatus } from '../../types/vendor';
 import { formatCurrency, prettifyStatus } from '../../utils/format';
+import { useAutoClearValue } from '../../utils/useAutoClearValue';
 import {
   buildVendorOrderLocation,
   formatRelativeTime,
@@ -24,6 +28,7 @@ import { ActionButton, SectionTitle, SegmentTabs, StatusBadge } from '../shared/
 import { tokens } from '../shared/tokens';
 
 type OrderTab = 'pending' | 'completed' | 'cancelled';
+const ORDER_PAGE_SIZE = 10;
 
 const orderTabs: Array<{ key: OrderTab; label: string }> = [
   { key: 'pending', label: 'Pending' },
@@ -33,38 +38,91 @@ const orderTabs: Array<{ key: OrderTab; label: string }> = [
 
 interface VendorOrdersScreenProps {
   highlightedOrderId?: number | null;
+  notificationTapRequestId?: number;
 }
 
-export function VendorOrdersScreen({ highlightedOrderId = null }: VendorOrdersScreenProps) {
-  const { orders, ordersLoading, error, refreshOrders, updateOrderStatus } = useVendorApp();
+export function VendorOrdersScreen({
+  highlightedOrderId = null,
+  notificationTapRequestId = 0,
+}: VendorOrdersScreenProps) {
+  const insets = useSafeAreaInsets();
+  const { ordersByTab, orderCounts, ordersLoading, error, refreshOrders, updateOrderStatus } = useVendorApp();
   const [activeStatus, setActiveStatus] = useState<OrderTab>('pending');
   const [updatingKey, setUpdatingKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [cancelTargetOrderId, setCancelTargetOrderId] = useState<number | null>(null);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelReasonError, setCancelReasonError] = useState<string | null>(null);
+  const [visibleCounts, setVisibleCounts] = useState<Record<OrderTab, number>>({
+    pending: ORDER_PAGE_SIZE,
+    completed: ORDER_PAGE_SIZE,
+    cancelled: ORDER_PAGE_SIZE,
+  });
+  const modalBottomPadding = Math.max(insets.bottom, 14) + 8;
+  const appliedNotificationTapRef = useRef(0);
+
+  useAutoClearValue(actionError, () => setActionError(null));
 
   useEffect(() => {
     void refreshOrders();
   }, []);
 
-  const counts = useMemo(
-    () => ({
-      pending: orders.filter((order) => groupVendorOrderStatus(order.status) === 'pending').length,
-      completed: orders.filter((order) => groupVendorOrderStatus(order.status) === 'completed').length,
-      cancelled: orders.filter((order) => groupVendorOrderStatus(order.status) === 'cancelled').length,
-    }),
-    [orders],
-  );
+  useEffect(() => {
+    if (!notificationTapRequestId) {
+      return;
+    }
 
-  const filteredOrders = useMemo(
-    () => orders.filter((order) => groupVendorOrderStatus(order.status) === activeStatus),
-    [orders, activeStatus],
+    void refreshOrders({ force: true });
+  }, [highlightedOrderId, notificationTapRequestId]);
+
+  useEffect(() => {
+    if (!highlightedOrderId || appliedNotificationTapRef.current === notificationTapRequestId) {
+      return;
+    }
+
+    const matchedOrder = Object.values(ordersByTab)
+      .flat()
+      .find((order) => order.id === highlightedOrderId);
+
+    if (!matchedOrder) {
+      return;
+    }
+
+    const nextTab = groupVendorOrderStatus(matchedOrder.status);
+    const matchIndex = ordersByTab[nextTab].findIndex((order) => order.id === highlightedOrderId);
+    if (matchIndex >= 0) {
+      const requiredVisibleCount = Math.max(
+        ORDER_PAGE_SIZE,
+        Math.ceil((matchIndex + 1) / ORDER_PAGE_SIZE) * ORDER_PAGE_SIZE,
+      );
+      setVisibleCounts((current) => (
+        current[nextTab] >= requiredVisibleCount
+          ? current
+          : { ...current, [nextTab]: requiredVisibleCount }
+      ));
+    }
+
+    setActiveStatus(nextTab);
+    appliedNotificationTapRef.current = notificationTapRequestId;
+  }, [highlightedOrderId, notificationTapRequestId, ordersByTab]);
+
+  const filteredOrders = useMemo(() => ordersByTab[activeStatus], [activeStatus, ordersByTab]);
+  const visibleOrders = useMemo(
+    () => filteredOrders.slice(0, visibleCounts[activeStatus]),
+    [activeStatus, filteredOrders, visibleCounts],
   );
+  const hasMoreOrders = visibleOrders.length < filteredOrders.length;
 
   const cancelTargetOrder = useMemo(
-    () => (cancelTargetOrderId ? orders.find((order) => order.id === cancelTargetOrderId) ?? null : null),
-    [cancelTargetOrderId, orders],
+    () =>
+      cancelTargetOrderId
+        ? (Object.values(ordersByTab).flat().find((order) => order.id === cancelTargetOrderId) ?? null)
+        : null,
+    [cancelTargetOrderId, ordersByTab],
+  );
+  const topMessages = useMemo(
+    () => Array.from(new Set([error, actionError].filter((message): message is string => !!message))),
+    [actionError, error],
   );
 
   const handleStatusUpdate = async (
@@ -149,7 +207,7 @@ export function VendorOrdersScreen({ highlightedOrderId = null }: VendorOrdersSc
           <RefreshControl
             refreshing={ordersLoading}
             onRefresh={() => {
-              void refreshOrders();
+              void refreshOrders({ force: true });
             }}
           />
         }
@@ -157,20 +215,24 @@ export function VendorOrdersScreen({ highlightedOrderId = null }: VendorOrdersSc
         <SectionTitle title="Orders" subtitle="Manage current customer orders" />
 
         <SegmentTabs
-          tabs={orderTabs.map((tab) => ({ key: tab.key, label: tab.label, count: counts[tab.key] }))}
+          tabs={orderTabs.map((tab) => ({ key: tab.key, label: tab.label, count: orderCounts[tab.key] }))}
           activeKey={activeStatus}
           onChange={(key) => setActiveStatus(key as OrderTab)}
           palette="vendor"
         />
 
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
-        {actionError ? <Text style={styles.errorText}>{actionError}</Text> : null}
+        {topMessages.map((message) => (
+          <Text key={message} style={styles.errorText}>{message}</Text>
+        ))}
 
         {filteredOrders.length === 0 ? <Text style={styles.emptyText}>No orders in this tab.</Text> : null}
 
-        {filteredOrders.map((order) => {
-          const nextStatuses = getVisibleTransitions(order.status, order.allowed_transitions);
-          const showCompleteAction = order.status === 'placed';
+        {visibleOrders.map((order) => {
+          const isQuickRequest = order.order_channel === 'office_quick_request';
+          const nextStatuses = getVisibleTransitions(order.status, order.allowed_transitions).filter(
+            (status) => !(isQuickRequest && status === 'delivered'),
+          );
+          const showCompleteAction = order.status === 'placed' && !isQuickRequest;
 
           return (
             <View
@@ -195,12 +257,26 @@ export function VendorOrdersScreen({ highlightedOrderId = null }: VendorOrdersSc
 
               <Text style={styles.customerText}>{order.customer_name ?? 'Customer'}</Text>
 
-              <View style={styles.itemsWrap}>
-                {order.items.map((item) => (
-                  <Text key={`${order.id}-${item.id}-${item.title}`} style={styles.itemText}>
-                    • {item.title} x{item.qty}
+              {isQuickRequest ? (
+                <View style={styles.quickRequestBadge}>
+                  <Text style={styles.quickRequestBadgeText}>
+                    Quick Request{order.quick_request?.requested_label ? ` • ${order.quick_request.requested_label}` : ''}
                   </Text>
-                ))}
+                </View>
+              ) : null}
+
+              <View style={styles.itemsWrap}>
+                {order.items.length > 0 ? (
+                  order.items.map((item) => (
+                    <Text key={`${order.id}-${item.id}-${item.title}`} style={styles.itemText}>
+                      • {item.title} x{item.qty}
+                    </Text>
+                  ))
+                ) : isQuickRequest ? (
+                  <Text style={styles.itemText}>
+                    • Requested: {order.quick_request?.requested_label ?? 'Tea / Coffee'}
+                  </Text>
+                ) : null}
               </View>
 
               <View style={styles.locationRow}>
@@ -225,9 +301,17 @@ export function VendorOrdersScreen({ highlightedOrderId = null }: VendorOrdersSc
               <View style={styles.totalRow}>
                 <Text style={styles.totalLabel}>Total</Text>
                 <Text style={[styles.totalValue, order.status === 'cancelled' ? styles.totalCancelled : null]}>
-                  {formatCurrency(order.total)}
+                  {isQuickRequest && order.quick_request?.payment_pending
+                    ? 'Pending'
+                    : formatCurrency(order.total)}
                 </Text>
               </View>
+
+              {isQuickRequest && order.quick_request?.payment_pending ? (
+                <Text style={styles.quickRequestHint}>
+                  Delivery partner will add tea or coffee counts and choose Office Wallet or COD at completion.
+                </Text>
+              ) : null}
 
               {nextStatuses.length > 0 ? (
                 <View style={styles.actionsRow}>
@@ -267,6 +351,24 @@ export function VendorOrdersScreen({ highlightedOrderId = null }: VendorOrdersSc
             </View>
           );
         })}
+
+        {hasMoreOrders ? (
+          <Pressable
+            style={styles.loadMoreButton}
+            onPress={() => {
+              setVisibleCounts((current) => ({
+                ...current,
+                [activeStatus]: current[activeStatus] + ORDER_PAGE_SIZE,
+              }));
+            }}
+          >
+            <Text style={styles.loadMoreText}>Load 10 more</Text>
+            <Text style={styles.loadMoreMeta}>
+              Showing {visibleOrders.length} of {filteredOrders.length} orders
+            </Text>
+          </Pressable>
+        ) : null}
+
       </ScrollView>
 
       <Modal
@@ -275,62 +377,72 @@ export function VendorOrdersScreen({ highlightedOrderId = null }: VendorOrdersSc
         transparent
         onRequestClose={closeCancelReasonModal}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 18 : 0}
+        >
           <Pressable style={StyleSheet.absoluteFill} onPress={closeCancelReasonModal} />
 
-          <View style={styles.modalSheet}>
-            <View style={styles.modalHeader}>
-              <View style={styles.modalTitleWrap}>
-                <Ionicons name="alert-circle-outline" size={22} color={tokens.colors.danger} />
-                <Text style={styles.modalTitle}>Cancel Order</Text>
+          <ScrollView
+            contentContainerStyle={styles.modalScrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={[styles.modalSheet, { paddingBottom: modalBottomPadding }]}>
+              <View style={styles.modalHeader}>
+                <View style={styles.modalTitleWrap}>
+                  <Ionicons name="alert-circle-outline" size={22} color={tokens.colors.danger} />
+                  <Text style={styles.modalTitle}>Cancel Order</Text>
+                </View>
+
+                <Pressable style={styles.closeModalButton} onPress={closeCancelReasonModal} disabled={!!updatingKey}>
+                  <Ionicons name="close" size={18} color="#7f7f89" />
+                </Pressable>
               </View>
 
-              <Pressable style={styles.closeModalButton} onPress={closeCancelReasonModal} disabled={!!updatingKey}>
-                <Ionicons name="close" size={18} color="#7f7f89" />
-              </Pressable>
-            </View>
+              <Text style={styles.modalPrompt}>
+                {cancelTargetOrder ? `Why are you cancelling ${cancelTargetOrder.order_no}?` : 'Why are you cancelling this order?'}
+              </Text>
 
-            <Text style={styles.modalPrompt}>
-              {cancelTargetOrder ? `Why are you cancelling ${cancelTargetOrder.order_no}?` : 'Why are you cancelling this order?'}
-            </Text>
-
-            <TextInput
-              value={cancelReason}
-              onChangeText={(value) => {
-                setCancelReason(value);
-                if (cancelReasonError) {
-                  setCancelReasonError(null);
-                }
-              }}
-              placeholder="Enter cancel reason"
-              placeholderTextColor="#9a9aa3"
-              multiline
-              style={styles.reasonInput}
-              textAlignVertical="top"
-            />
-
-            {cancelReasonError ? <Text style={styles.errorText}>{cancelReasonError}</Text> : null}
-
-            <View style={styles.modalActionsRow}>
-              <ActionButton
-                label="Back"
-                tone="muted"
-                style={styles.halfAction}
-                disabled={!!updatingKey}
-                onPress={closeCancelReasonModal}
-              />
-              <ActionButton
-                label={updatingKey === `${cancelTargetOrder?.id}:cancelled` ? 'Cancelling...' : 'Cancel Order'}
-                tone="danger"
-                style={styles.halfAction}
-                disabled={!!updatingKey}
-                onPress={() => {
-                  void submitCancelReason();
+              <TextInput
+                value={cancelReason}
+                onChangeText={(value) => {
+                  setCancelReason(value);
+                  if (cancelReasonError) {
+                    setCancelReasonError(null);
+                  }
                 }}
+                placeholder="Enter cancel reason"
+                placeholderTextColor="#9a9aa3"
+                multiline
+                style={styles.reasonInput}
+                textAlignVertical="top"
               />
+
+              {cancelReasonError ? <Text style={styles.errorText}>{cancelReasonError}</Text> : null}
+
+              <View style={styles.modalActionsRow}>
+                <ActionButton
+                  label="Back"
+                  tone="muted"
+                  style={styles.halfAction}
+                  disabled={!!updatingKey}
+                  onPress={closeCancelReasonModal}
+                />
+                <ActionButton
+                  label={updatingKey === `${cancelTargetOrder?.id}:cancelled` ? 'Cancelling...' : 'Cancel Order'}
+                  tone="danger"
+                  style={styles.halfAction}
+                  disabled={!!updatingKey}
+                  onPress={() => {
+                    void submitCancelReason();
+                  }}
+                />
+              </View>
             </View>
-          </View>
-        </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -423,6 +535,26 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 8,
   },
+  loadMoreButton: {
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#ffd7bd',
+    backgroundColor: '#fff7f0',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 4,
+  },
+  loadMoreText: {
+    color: tokens.colors.vendorPrimary,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  loadMoreMeta: {
+    color: '#8b8b95',
+    fontSize: 12,
+    fontWeight: '600',
+  },
   orderCard: {
     backgroundColor: '#f7f7f8',
     borderWidth: 1,
@@ -469,6 +601,18 @@ const styles = StyleSheet.create({
     color: '#4a4a53',
     fontSize: 13,
     fontWeight: '700',
+  },
+  quickRequestBadge: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    backgroundColor: '#fff1e5',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  quickRequestBadgeText: {
+    color: tokens.colors.vendorPrimary,
+    fontSize: 11,
+    fontWeight: '800',
   },
   itemsWrap: {
     borderRadius: 12,
@@ -555,6 +699,12 @@ const styles = StyleSheet.create({
     color: '#b6b6be',
     textDecorationLine: 'line-through',
   },
+  quickRequestHint: {
+    color: '#7f7f89',
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 18,
+  },
   actionsRow: {
     flexDirection: 'row',
     gap: 8,
@@ -569,6 +719,11 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(14,16,23,0.52)',
     justifyContent: 'flex-end',
   },
+  modalScrollContent: {
+    flexGrow: 1,
+    justifyContent: 'flex-end',
+    paddingTop: 28,
+  },
   modalSheet: {
     backgroundColor: '#f8f8f9',
     borderTopLeftRadius: 24,
@@ -577,6 +732,7 @@ const styles = StyleSheet.create({
     borderColor: '#e7e7eb',
     padding: 16,
     gap: 12,
+    maxHeight: '88%',
   },
   modalHeader: {
     flexDirection: 'row',

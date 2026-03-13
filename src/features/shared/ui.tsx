@@ -10,6 +10,7 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { VendorTabKey } from '../../types/workflow';
 import { tokens } from './tokens';
@@ -115,6 +116,105 @@ export function Field({ label, icon, rightIcon, onRightIconPress, style, ...prop
   );
 }
 
+interface QuantityStepperProps {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  tone?: 'vendor' | 'delivery';
+  min?: number;
+}
+
+export function QuantityStepper({
+  label,
+  value,
+  onChange,
+  tone = 'vendor',
+  min = 0,
+}: QuantityStepperProps) {
+  const accent = tone === 'delivery' ? tokens.colors.deliveryPrimary : tokens.colors.vendorPrimary;
+  const canDecrement = value > min;
+  const [draftValue, setDraftValue] = React.useState(String(value));
+  const [isEditing, setIsEditing] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!isEditing) {
+      setDraftValue(String(value));
+    }
+  }, [isEditing, value]);
+
+  function applyValue(nextValue: number): void {
+    const normalizedValue = Math.max(min, nextValue);
+    setIsEditing(false);
+    setDraftValue(String(normalizedValue));
+    onChange(normalizedValue);
+  }
+
+  function handleChangeText(text: string): void {
+    const digitsOnly = text.replace(/\D/g, '');
+    setDraftValue(digitsOnly);
+
+    if (digitsOnly === '') {
+      onChange(min);
+      return;
+    }
+
+    onChange(Math.max(min, Number(digitsOnly)));
+  }
+
+  function handleBlur(): void {
+    const normalizedValue = draftValue === '' ? min : Math.max(min, Number(draftValue));
+    setIsEditing(false);
+    setDraftValue(String(normalizedValue));
+    onChange(normalizedValue);
+  }
+
+  return (
+    <View style={styles.quantityStepperWrap}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <View style={styles.quantityStepperCard}>
+        <Pressable
+          onPress={() => applyValue(value - 1)}
+          disabled={!canDecrement}
+          style={[
+            styles.quantityStepperButton,
+            styles.quantityStepperButtonLeft,
+            !canDecrement ? styles.quantityStepperButtonDisabled : null,
+          ]}
+        >
+          <Ionicons name="remove" size={18} color={canDecrement ? accent : '#b8b8c0'} />
+        </Pressable>
+
+        <View style={styles.quantityStepperValueWrap}>
+          <TextInput
+            value={isEditing ? draftValue : String(value)}
+            onFocus={() => {
+              setIsEditing(true);
+              setDraftValue(String(value));
+            }}
+            onBlur={handleBlur}
+            onChangeText={handleChangeText}
+            keyboardType="number-pad"
+            selectTextOnFocus
+            maxLength={4}
+            style={styles.quantityStepperInput}
+          />
+        </View>
+
+        <Pressable
+          onPress={() => applyValue(value + 1)}
+          style={[
+            styles.quantityStepperButton,
+            styles.quantityStepperButtonRight,
+            { backgroundColor: tone === 'delivery' ? '#eff4ff' : '#fff1e5' },
+          ]}
+        >
+          <Ionicons name="add" size={18} color={accent} />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 export function StatusBadge({ label, tone }: { label: string; tone: 'orange' | 'green' | 'red' | 'gray' }) {
   const palette =
     tone === 'orange'
@@ -181,6 +281,9 @@ const vendorTabMeta: Record<VendorTabKey, { label: string; icon: keyof typeof Ma
   orders: { label: 'Orders', icon: 'clipboard-text-outline' },
   products: { label: 'Products', icon: 'package-variant-closed' },
   delivery: { label: 'Delivery', icon: 'bike-fast' },
+  wallet: { label: 'Wallet', icon: 'wallet-plus-outline' },
+  manual: { label: 'Manual', icon: 'notebook-plus-outline' },
+  reports: { label: 'Reports', icon: 'file-chart-outline' },
   profile: { label: 'Profile', icon: 'account-outline' },
 };
 
@@ -192,9 +295,11 @@ interface VendorBottomTabsProps {
 
 export function VendorBottomTabs({ activeTab, onPressTab, tabs }: VendorBottomTabsProps) {
   const orderedTabs: VendorTabKey[] = tabs ?? ['dashboard', 'orders', 'products', 'delivery', 'profile'];
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets.bottom, 8);
 
   return (
-    <View style={styles.bottomTabsWrap}>
+    <View style={[styles.bottomTabsWrap, { paddingBottom: bottomInset + 6 }]}>
       {orderedTabs.map((tab) => {
         const meta = vendorTabMeta[tab];
         const isActive = tab === activeTab;
@@ -298,6 +403,51 @@ const styles = StyleSheet.create({
   },
   rightIconButton: {
     padding: 4,
+  },
+  quantityStepperWrap: {
+    gap: 8,
+  },
+  quantityStepperCard: {
+    height: 48,
+    borderRadius: tokens.radius.md,
+    borderWidth: 1,
+    borderColor: tokens.colors.border,
+    backgroundColor: '#ffffff',
+    flexDirection: 'row',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  quantityStepperButton: {
+    width: 52,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f6f6f8',
+  },
+  quantityStepperButtonLeft: {
+    borderRightWidth: 1,
+    borderRightColor: tokens.colors.border,
+  },
+  quantityStepperButtonRight: {
+    borderLeftWidth: 1,
+    borderLeftColor: tokens.colors.border,
+  },
+  quantityStepperButtonDisabled: {
+    backgroundColor: '#f2f2f4',
+  },
+  quantityStepperValueWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  quantityStepperInput: {
+    width: '100%',
+    color: tokens.colors.text,
+    fontSize: 18,
+    fontWeight: '800',
+    textAlign: 'center',
+    paddingVertical: 0,
   },
   statusBadge: {
     borderRadius: tokens.radius.round,

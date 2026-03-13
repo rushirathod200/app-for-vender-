@@ -1,9 +1,11 @@
-import { OrderStatus } from './vendor';
+import { OrderStatus, QuickRequestDetails } from './vendor';
 
 export interface AssignedVendor {
   id: number;
   name: string | null;
   email: string | null;
+  quick_request_tea_price?: number;
+  quick_request_coffee_price?: number;
 }
 
 export interface DeliveryProfile {
@@ -35,6 +37,9 @@ export interface DeliveryOrder {
   payment_method: string | null;
   notes: string | null;
   cancel_reason: string | null;
+  order_channel: string | null;
+  ordered_by_name: string | null;
+  quick_request: QuickRequestDetails | null;
   placed_at: string | null;
   allowed_transitions: OrderStatus[];
   building_name: string | null;

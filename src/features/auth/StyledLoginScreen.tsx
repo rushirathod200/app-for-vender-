@@ -1,6 +1,6 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Keyboard, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { useAuth } from '../../context/AuthContext';
 import { ActionButton, Field } from '../shared/ui';
@@ -12,29 +12,33 @@ export function StyledLoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const showLoginAlert = (title: string, message: string): void => {
+    Alert.alert(title, message);
+  };
+
   const onLogin = async (): Promise<void> => {
+    Keyboard.dismiss();
+
     const normalizedEmail = email.trim().toLowerCase();
 
     if (!normalizedEmail.includes('@')) {
-      setError('Enter a valid email address.');
+      showLoginAlert('Invalid Email', 'Enter a valid email address.');
       return;
     }
 
     if (password.trim().length < 6) {
-      setError('Enter your password.');
+      showLoginAlert('Invalid Password', 'Enter your password.');
       return;
     }
 
     setLoading(true);
-    setError(null);
 
     try {
       await login({ email: normalizedEmail, password });
     } catch (loginError) {
-      setError(loginError instanceof Error ? loginError.message : 'Could not login.');
+      showLoginAlert('Login Failed', loginError instanceof Error ? loginError.message : 'Could not login.');
     } finally {
       setLoading(false);
     }
@@ -61,32 +65,27 @@ export function StyledLoginScreen() {
           <Field
             label="Email Address"
             value={email}
-            onChangeText={(value) => {
-              setEmail(value);
-              if (error) {
-                setError(null);
-              }
-            }}
+            onChangeText={setEmail}
             icon="mail-outline"
             autoCapitalize="none"
             keyboardType="email-address"
             placeholder="Enter your email"
+            returnKeyType="next"
           />
 
           <Field
             label="Password"
             value={password}
-            onChangeText={(value) => {
-              setPassword(value);
-              if (error) {
-                setError(null);
-              }
-            }}
+            onChangeText={setPassword}
             icon="lock-closed-outline"
             placeholder="Enter your password"
             secureTextEntry={!showPassword}
             rightIcon={showPassword ? 'eye-off-outline' : 'eye-outline'}
             onRightIconPress={() => setShowPassword((value) => !value)}
+            returnKeyType="done"
+            onSubmitEditing={() => {
+              void onLogin();
+            }}
           />
 
           <ActionButton label={loading ? 'Logging in...' : 'Login'} onPress={() => void onLogin()} disabled={loading} />
@@ -95,8 +94,6 @@ export function StyledLoginScreen() {
             <Ionicons name="bag-handle-outline" size={15} color={tokens.colors.vendorPrimary} />
             <Text style={styles.roleInfoText}>Vendor and delivery accounts can sign in here</Text>
           </View>
-
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -172,11 +169,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     flex: 1,
-  },
-  errorText: {
-    marginTop: -6,
-    color: tokens.colors.danger,
-    fontSize: 12,
-    fontWeight: '700',
   },
 });
