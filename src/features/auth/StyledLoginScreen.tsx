@@ -1,6 +1,7 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useState } from 'react';
-import { Alert, Keyboard, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Keyboard, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../context/AuthContext';
 import { ActionButton, Field } from '../shared/ui';
@@ -8,6 +9,9 @@ import { tokens } from '../shared/tokens';
 
 export function StyledLoginScreen() {
   const { login } = useAuth();
+  const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const isTabletWidth = width >= 768;
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -49,50 +53,62 @@ export function StyledLoginScreen() {
       style={styles.root}
       behavior={Platform.select({ ios: 'padding', android: undefined })}
     >
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-        <View style={styles.heroCard}>
-          <View style={styles.heroIconWrap}>
-            <MaterialCommunityIcons name="shopping-outline" size={30} color="#ffffff" />
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollContent,
+          {
+            paddingTop: Math.max(insets.top + 10, 24),
+            paddingBottom: Math.max(insets.bottom + 24, 34),
+            paddingHorizontal: isTabletWidth ? 32 : 16,
+          },
+        ]}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={[styles.loginPanel, isTabletWidth ? styles.loginPanelTablet : null]}>
+          <View style={styles.heroCard}>
+            <View style={styles.heroIconWrap}>
+              <MaterialCommunityIcons name="shopping-outline" size={30} color="#ffffff" />
+            </View>
+            <Text style={styles.heroTitle}>DeskDrop</Text>
+            <Text style={styles.heroSubtitle}>Vendor & Delivery Partner App</Text>
           </View>
-          <Text style={styles.heroTitle}>CafeConnect</Text>
-          <Text style={styles.heroSubtitle}>Vendor & Delivery Partner App</Text>
-        </View>
 
-        <View style={styles.formWrap}>
-          <Text style={styles.formTitle}>Welcome Back!</Text>
-          <Text style={styles.formSubTitle}>Sign in with your vendor email and password</Text>
+          <View style={styles.formWrap}>
+            <Text style={styles.formTitle}>Welcome Back!</Text>
+            <Text style={styles.formSubTitle}>Sign in with your vendor email and password</Text>
 
-          <Field
-            label="Email Address"
-            value={email}
-            onChangeText={setEmail}
-            icon="mail-outline"
-            autoCapitalize="none"
-            keyboardType="email-address"
-            placeholder="Enter your email"
-            returnKeyType="next"
-          />
+            <Field
+              label="Email Address"
+              value={email}
+              onChangeText={setEmail}
+              icon="mail-outline"
+              autoCapitalize="none"
+              keyboardType="email-address"
+              placeholder="Enter your email"
+              returnKeyType="next"
+            />
 
-          <Field
-            label="Password"
-            value={password}
-            onChangeText={setPassword}
-            icon="lock-closed-outline"
-            placeholder="Enter your password"
-            secureTextEntry={!showPassword}
-            rightIcon={showPassword ? 'eye-off-outline' : 'eye-outline'}
-            onRightIconPress={() => setShowPassword((value) => !value)}
-            returnKeyType="done"
-            onSubmitEditing={() => {
-              void onLogin();
-            }}
-          />
+            <Field
+              label="Password"
+              value={password}
+              onChangeText={setPassword}
+              icon="lock-closed-outline"
+              placeholder="Enter your password"
+              secureTextEntry={!showPassword}
+              rightIcon={showPassword ? 'eye-off-outline' : 'eye-outline'}
+              onRightIconPress={() => setShowPassword((value) => !value)}
+              returnKeyType="done"
+              onSubmitEditing={() => {
+                void onLogin();
+              }}
+            />
 
-          <ActionButton label={loading ? 'Logging in...' : 'Login'} onPress={() => void onLogin()} disabled={loading} />
+            <ActionButton label={loading ? 'Logging in...' : 'Login'} onPress={() => void onLogin()} disabled={loading} />
 
-          <View style={styles.roleInfoWrap}>
-            <Ionicons name="bag-handle-outline" size={15} color={tokens.colors.vendorPrimary} />
-            <Text style={styles.roleInfoText}>Vendor and delivery accounts can sign in here</Text>
+            <View style={styles.roleInfoWrap}>
+              <Ionicons name="bag-handle-outline" size={15} color={tokens.colors.vendorPrimary} />
+              <Text style={styles.roleInfoText}>Vendor and delivery accounts can sign in here</Text>
+            </View>
           </View>
         </View>
       </ScrollView>
@@ -106,22 +122,30 @@ const styles = StyleSheet.create({
     backgroundColor: tokens.colors.appBg,
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 30,
     gap: 12,
+    alignItems: 'center',
+  },
+  loginPanel: {
+    width: '100%',
+    maxWidth: 460,
+    gap: 12,
+  },
+  loginPanelTablet: {
+    maxWidth: 520,
+    paddingTop: 20,
   },
   heroCard: {
     backgroundColor: '#ece5dd',
     borderRadius: 28,
-    paddingVertical: 20,
+    paddingTop: 22,
+    paddingBottom: 18,
     alignItems: 'center',
     gap: 8,
   },
   heroIconWrap: {
-    width: 72,
-    height: 72,
-    borderRadius: 24,
+    width: 64,
+    height: 64,
+    borderRadius: 22,
     backgroundColor: tokens.colors.vendorPrimary,
     alignItems: 'center',
     justifyContent: 'center',

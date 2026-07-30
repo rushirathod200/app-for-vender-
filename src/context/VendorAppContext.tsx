@@ -18,6 +18,7 @@ import {
   fetchVendorUnreadNotificationCount,
   markVendorNotificationRead,
 } from '../api/notificationsApi';
+import { ApiError } from '../api/httpClient';
 import { useAutoClearValue } from '../utils/useAutoClearValue';
 import { useAuth } from './AuthContext';
 import { AuthUser } from '../types/auth';
@@ -29,6 +30,7 @@ import {
   OrderStatus,
   OrderTabCounts,
   OrderTabKey,
+  StoreHours,
   VendorDeliveryPartner,
   VendorOrder,
   VendorProfile,
@@ -59,6 +61,8 @@ interface VendorAppContextValue {
   ordersLoading: boolean;
   notificationsLoading: boolean;
   deliveryPartnersLoading: boolean;
+  connectionUnavailable: boolean;
+  connectionUnavailableReason: string | null;
   error: string | null;
   refreshAll: (options?: RefreshOptions) => Promise<void>;
   refreshProducts: (options?: RefreshOptions) => Promise<void>;
@@ -71,11 +75,18 @@ interface VendorAppContextValue {
     email: string;
     mobile: string;
     store_open: boolean;
+    store_hours_enabled?: boolean;
+    store_hours?: StoreHours;
     delivery_charge: number;
+    estimated_waiting_time_minutes: number | null;
     below_minimum_order_mode: BelowMinimumOrderMode;
     minimum_order_value: number;
-    quick_request_tea_price: number;
-    quick_request_coffee_price: number;
+    building_id?: number;
+    quick_request_tea_price?: number;
+    quick_request_coffee_price?: number;
+    print_bw_price?: number;
+    print_color_price?: number;
+    print_legal_price?: number;
     office_wallet_credit_enabled: boolean;
   }) => Promise<void>;
   toggleStoreOpen: () => Promise<void>;
@@ -166,6 +177,8 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [deliveryPartnersLoading, setDeliveryPartnersLoading] = useState(false);
+  const [connectionUnavailable, setConnectionUnavailable] = useState(false);
+  const [connectionUnavailableReason, setConnectionUnavailableReason] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const cacheRef = useRef({
     all: { loaded: false, timestamp: 0 },
@@ -210,6 +223,8 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       setNotifications([]);
       setUnreadNotificationCount(0);
       setDeliveryPartners([]);
+      setConnectionUnavailable(false);
+      setConnectionUnavailableReason(null);
       setError(null);
       setIsLoading(false);
       cacheRef.current = {
@@ -264,6 +279,8 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
         setUnreadNotificationCount(
           notificationIndex.unreadCount ?? (await fetchVendorUnreadNotificationCount()),
         );
+        setConnectionUnavailable(false);
+        setConnectionUnavailableReason(null);
         touchCache(['orders']);
 
         if (fetchedBuildings.length === 0) {
@@ -295,8 +312,14 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
         });
         touchCache(['all', 'orders', 'notifications', 'deliveryPartners']);
       } catch (loadError) {
-        const message = loadError instanceof Error ? loadError.message : 'Could not load vendor data.';
-        setError(message);
+        if (loadError instanceof ApiError && loadError.status === 0) {
+          setConnectionUnavailable(true);
+          setConnectionUnavailableReason(loadError.message);
+          setError(null);
+        } else {
+          const message = loadError instanceof Error ? loadError.message : 'Could not load vendor data.';
+          setError(message);
+        }
       } finally {
         setIsLoading(false);
       }
@@ -520,11 +543,18 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
     email: string;
     mobile: string;
     store_open: boolean;
+    store_hours_enabled?: boolean;
+    store_hours?: StoreHours;
     delivery_charge: number;
+    estimated_waiting_time_minutes: number | null;
     below_minimum_order_mode: BelowMinimumOrderMode;
     minimum_order_value: number;
-    quick_request_tea_price: number;
-    quick_request_coffee_price: number;
+    building_id?: number;
+    quick_request_tea_price?: number;
+    quick_request_coffee_price?: number;
+    print_bw_price?: number;
+    print_color_price?: number;
+    print_legal_price?: number;
     office_wallet_credit_enabled: boolean;
   }): Promise<void> => {
     const updated = await updateVendorProfile(input);
@@ -544,16 +574,25 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
     setProfile(optimistic);
 
     try {
+      const quickRequestBuilding = profile.assigned_buildings.find((building) => building.is_quick_request_vendor);
+
       await saveProfile({
         name: profile.name ?? '',
         email: profile.email ?? '',
         mobile: profile.mobile,
         store_open: next,
+        store_hours_enabled: profile.store_hours_enabled,
+        store_hours: profile.store_hours,
         delivery_charge: profile.delivery_charge,
+        estimated_waiting_time_minutes: profile.estimated_waiting_time_minutes,
         below_minimum_order_mode: profile.below_minimum_order_mode,
         minimum_order_value: profile.minimum_order_value,
-        quick_request_tea_price: profile.quick_request_tea_price,
-        quick_request_coffee_price: profile.quick_request_coffee_price,
+        building_id: quickRequestBuilding?.id,
+        quick_request_tea_price: quickRequestBuilding ? profile.quick_request_tea_price : undefined,
+        quick_request_coffee_price: quickRequestBuilding ? profile.quick_request_coffee_price : undefined,
+        print_bw_price: profile.can_manage_print_pricing ? profile.print_bw_price : undefined,
+        print_color_price: profile.can_manage_print_pricing ? profile.print_color_price : undefined,
+        print_legal_price: profile.can_manage_print_pricing ? profile.print_legal_price : undefined,
         office_wallet_credit_enabled: profile.office_wallet_credit_enabled,
       });
     } catch (toggleError) {
@@ -566,18 +605,25 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
 
   const toggleProductActive = async (item: MenuItem): Promise<void> => {
     const nextAvailability = !item.is_available;
+    const updateCachedItem = (entry: MenuItem, isAvailable: boolean): MenuItem =>
+      entry.id === item.id ||
+      (item.predefined_product_id !== null &&
+        item.predefined_product_id !== undefined &&
+        entry.predefined_product_id === item.predefined_product_id)
+        ? {
+            ...entry,
+            is_available: isAvailable,
+          }
+        : entry;
 
-    setProductsByBuilding((current) => ({
-      ...current,
-      [item.building_id]: (current[item.building_id] ?? []).map((entry) =>
-        entry.id === item.id
-          ? {
-              ...entry,
-              is_available: nextAvailability,
-            }
-          : entry,
+    setProductsByBuilding((current) =>
+      Object.fromEntries(
+        Object.entries(current).map(([buildingId, entries]) => [
+          buildingId,
+          entries.map((entry) => updateCachedItem(entry, nextAvailability)),
+        ]),
       ),
-    }));
+    );
 
     try {
       await updateMenuItemAvailability(item.id, nextAvailability);
@@ -587,17 +633,14 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       };
       touchCache(['all']);
     } catch (toggleError) {
-      setProductsByBuilding((current) => ({
-        ...current,
-        [item.building_id]: (current[item.building_id] ?? []).map((entry) =>
-          entry.id === item.id
-            ? {
-                ...entry,
-                is_available: item.is_available,
-              }
-            : entry,
+      setProductsByBuilding((current) =>
+        Object.fromEntries(
+          Object.entries(current).map(([buildingId, entries]) => [
+            buildingId,
+            entries.map((entry) => updateCachedItem(entry, item.is_available)),
+          ]),
         ),
-      }));
+      );
 
       const message = toggleError instanceof Error ? toggleError.message : 'Could not update menu item availability.';
       setError(message);
@@ -765,6 +808,8 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       ordersLoading,
       notificationsLoading,
       deliveryPartnersLoading,
+      connectionUnavailable,
+      connectionUnavailableReason,
       error,
       refreshAll,
       refreshProducts,
@@ -782,6 +827,8 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
     [
       allProducts,
       buildings,
+      connectionUnavailable,
+      connectionUnavailableReason,
       dashboardOrderSummary,
       deliveryPartners,
       deliveryPartnersLoading,

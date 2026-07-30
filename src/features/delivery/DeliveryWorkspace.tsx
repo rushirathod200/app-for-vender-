@@ -52,7 +52,7 @@ export function DeliveryWorkspace() {
 
   return (
     <DeliveryAppProvider>
-      <SafeAreaView style={styles.root} edges={['bottom', 'left', 'right']}>
+      <SafeAreaView style={styles.root} edges={['top', 'bottom', 'left', 'right']}>
         {activeScreen === 'orders' ? (
           <DeliveryOrdersScreen
             highlightedOrderId={highlightedOrderId}

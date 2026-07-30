@@ -11,6 +11,18 @@ import {
 } from '../utils/parsers';
 import { apiClient } from './httpClient';
 
+function normalizeBelowMinimumOrderMode(
+  value: unknown,
+): 'charge_delivery' | 'block_order' | 'free_delivery' {
+  const mode = toStringValue(value, 'charge_delivery');
+
+  if (mode === 'block_order' || mode === 'free_delivery') {
+    return mode;
+  }
+
+  return 'charge_delivery';
+}
+
 function normalizeAuthUser(payload: unknown): AuthUser | null {
   if (!isRecord(payload)) {
     return null;
@@ -32,10 +44,7 @@ function normalizeAuthUser(payload: unknown): AuthUser | null {
     is_active: toBooleanValue(payload.is_active, true),
     store_open: toBooleanValue(payload.store_open, true),
     delivery_charge: toNumberValue(payload.delivery_charge, 0),
-    below_minimum_order_mode:
-      toStringValue(payload.below_minimum_order_mode, 'charge_delivery') === 'block_order'
-        ? 'block_order'
-        : 'charge_delivery',
+    below_minimum_order_mode: normalizeBelowMinimumOrderMode(payload.below_minimum_order_mode),
     minimum_order_value: toNumberValue(payload.minimum_order_value, 50),
     office_wallet_credit_enabled: toBooleanValue(payload.office_wallet_credit_enabled, false),
   };
@@ -109,8 +118,14 @@ export async function fetchCurrentAuthUser(): Promise<AuthUser | null> {
   return null;
 }
 
-export async function logoutCurrentSession(input?: { deviceToken?: string | null }): Promise<void> {
+export async function logoutCurrentSession(input?: {
+  deviceToken?: string | null;
+  deviceId?: string | null;
+  appId?: string | null;
+}): Promise<void> {
   await apiClient.post<unknown>(API_ENDPOINTS.authLogout, {
     device_token: input?.deviceToken ?? null,
+    device_id: input?.deviceId ?? null,
+    app_id: input?.appId ?? null,
   });
 }

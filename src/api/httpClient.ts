@@ -20,6 +20,15 @@ interface RequestOptions {
   query?: Record<string, string | number | boolean | null | undefined>;
 }
 
+const GET_NETWORK_ATTEMPTS = 3;
+const NETWORK_RETRY_DELAY_MS = 700;
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
 function isNgrokUrl(value: string): boolean {
   try {
     return new URL(value).hostname.includes('ngrok');
@@ -86,15 +95,35 @@ class HttpClient {
       headers.Authorization = `Bearer ${this.token}`;
     }
 
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method,
-        headers,
-        body,
-      });
-    } catch (error) {
-      throw new ApiError(`Could not connect to API at ${API_BASE_URL}. Check server and network.`, 0, error);
+    let response: Response | null = null;
+    let lastNetworkError: unknown = null;
+    const attempts = method === 'GET' ? GET_NETWORK_ATTEMPTS : 1;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        response = await fetch(url, {
+          method,
+          headers,
+          body,
+        });
+        break;
+      } catch (error) {
+        lastNetworkError = error;
+        if (attempt < attempts) {
+          await wait(NETWORK_RETRY_DELAY_MS * attempt);
+        }
+      }
+    }
+
+    if (!response) {
+      const nativeMessage = lastNetworkError instanceof Error
+        ? lastNetworkError.message
+        : String(lastNetworkError ?? 'Network request failed');
+      throw new ApiError(
+        `DeskDrop API request failed: ${url} (${nativeMessage})`,
+        0,
+        lastNetworkError,
+      );
     }
 
     const payload = await this.readPayload(response);

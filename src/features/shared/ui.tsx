@@ -7,6 +7,7 @@ import {
   Text,
   TextInput,
   TextInputProps,
+  useWindowDimensions,
   View,
   ViewStyle,
 } from 'react-native';
@@ -296,27 +297,36 @@ interface VendorBottomTabsProps {
 export function VendorBottomTabs({ activeTab, onPressTab, tabs }: VendorBottomTabsProps) {
   const orderedTabs: VendorTabKey[] = tabs ?? ['dashboard', 'orders', 'products', 'delivery', 'profile'];
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const isTabletWidth = width >= 768;
   const bottomInset = Math.max(insets.bottom, 8);
 
   return (
-    <View style={[styles.bottomTabsWrap, { paddingBottom: bottomInset + 6 }]}>
-      {orderedTabs.map((tab) => {
-        const meta = vendorTabMeta[tab];
-        const isActive = tab === activeTab;
+    <View style={[styles.bottomTabsShell, { paddingBottom: bottomInset }]}>
+      <View style={[styles.bottomTabsWrap, isTabletWidth ? styles.bottomTabsWrapTablet : null]}>
+        {orderedTabs.map((tab) => {
+          const meta = vendorTabMeta[tab];
+          const isActive = tab === activeTab;
 
-        return (
-          <Pressable key={tab} onPress={() => onPressTab(tab)} style={styles.bottomTabButton}>
-            <View style={[styles.bottomTabIconWrap, isActive ? styles.bottomTabIconWrapActive : null]}>
-              <MaterialCommunityIcons
-                name={meta.icon}
-                size={21}
-                color={isActive ? tokens.colors.vendorPrimary : '#9c9ca6'}
-              />
-            </View>
-            <Text style={[styles.bottomTabLabel, isActive ? styles.bottomTabLabelActive : null]}>{meta.label}</Text>
-          </Pressable>
-        );
-      })}
+          return (
+            <Pressable
+              key={tab}
+              onPress={() => onPressTab(tab)}
+              style={styles.bottomTabButton}
+              hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+            >
+              <View style={[styles.bottomTabIconWrap, isActive ? styles.bottomTabIconWrapActive : null]}>
+                <MaterialCommunityIcons
+                  name={meta.icon}
+                  size={21}
+                  color={isActive ? tokens.colors.vendorPrimary : '#9c9ca6'}
+                />
+              </View>
+              <Text style={[styles.bottomTabLabel, isActive ? styles.bottomTabLabelActive : null]}>{meta.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
     </View>
   );
 }
@@ -512,21 +522,31 @@ const styles = StyleSheet.create({
   segmentCountTextInactive: {
     color: '#8f8f97',
   },
-  bottomTabsWrap: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    paddingBottom: 6,
+  bottomTabsShell: {
     borderTopWidth: 1,
     borderTopColor: '#e5e6ea',
     backgroundColor: '#fbfbfc',
+    alignItems: 'center',
+  },
+  bottomTabsWrap: {
+    width: '100%',
+    minHeight: 58,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingTop: 7,
+    paddingBottom: 5,
+  },
+  bottomTabsWrapTablet: {
+    maxWidth: 760,
   },
   bottomTabButton: {
     flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 2,
     minWidth: 0,
+    minHeight: 46,
   },
   bottomTabIconWrap: {
     width: 36,

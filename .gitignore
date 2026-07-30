@@ -7,11 +7,14 @@ node_modules/
 .expo/
 dist/
 web-build/
+/builds/
 expo-env.d.ts
 
 # Native
 .kotlin/
 *.orig.*
+/*.apk
+/*.aab
 *.jks
 *.p8
 *.p12
@@ -30,10 +33,17 @@ yarn-error.*
 .DS_Store
 *.pem
 
+# IDE metadata
+/.idea/
+
 # local env files
 .env
 .env.*
 !.env.example
+google-services.json
+
+# Android Play upload credentials (private; never commit)
+/credentials/
 
 # typescript
 *.tsbuildinfo

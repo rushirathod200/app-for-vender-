@@ -6,17 +6,23 @@ import {
   DeliveryPartnerFilter,
   ManualOfficeDirectoryItem,
   ManualOfficeFloorOption,
+  ManualOfficePaymentMethod,
   ManualOfficeOrderReceipt,
   ManualOfficePickerBuilding,
   ManualOfficeReport,
   MenuItem,
   OrderStatus,
+  PrintOrderDetails,
+  PrintOrderFile,
   QuickRequestDetails,
   StockFilter,
   BelowMinimumOrderMode,
+  StoreHours,
   VendorDeliveryPartner,
   VendorOrder,
   VendorOrderItem,
+  MenuItemVariant,
+  VendorOfficeWalletLookupItem,
   VendorProfile,
   VendorWalletTargetType,
   VendorWalletTopUpReceipt,
@@ -33,6 +39,42 @@ import {
   toStringValue,
 } from '../utils/parsers';
 import { apiClient } from './httpClient';
+
+function normalizeBelowMinimumOrderMode(value: unknown): BelowMinimumOrderMode {
+  const mode = toStringValue(value, 'charge_delivery');
+
+  if (mode === 'block_order' || mode === 'free_delivery') {
+    return mode;
+  }
+
+  return 'charge_delivery';
+}
+
+const DEFAULT_STORE_HOURS: StoreHours = {
+  mon: { is_open: true, opens_at: '08:00', closes_at: '20:00' },
+  tue: { is_open: true, opens_at: '08:00', closes_at: '20:00' },
+  wed: { is_open: true, opens_at: '08:00', closes_at: '20:00' },
+  thu: { is_open: true, opens_at: '08:00', closes_at: '20:00' },
+  fri: { is_open: true, opens_at: '08:00', closes_at: '20:00' },
+  sat: { is_open: true, opens_at: '08:00', closes_at: '20:00' },
+  sun: { is_open: false, opens_at: '08:00', closes_at: '20:00' },
+};
+
+function normalizeStoreHours(value: unknown): StoreHours {
+  const source = isRecord(value) ? value : {};
+  const normalized = { ...DEFAULT_STORE_HOURS };
+
+  (Object.keys(normalized) as Array<keyof StoreHours>).forEach((day) => {
+    const entry = isRecord(source[day]) ? source[day] : {};
+    normalized[day] = {
+      is_open: toBooleanValue(entry.is_open, normalized[day].is_open),
+      opens_at: toStringValue(entry.opens_at, normalized[day].opens_at),
+      closes_at: toStringValue(entry.closes_at, normalized[day].closes_at),
+    };
+  });
+
+  return normalized;
+}
 
 function toPublicAssetUrl(path: string | null): string | null {
   if (!path) {
@@ -71,6 +113,8 @@ function normalizeBuilding(entry: unknown): Building | null {
     floors_count: toNumberValue(entry.floors_count, 0),
     menu_items_count: toNumberValue(entry.menu_items_count, 0),
     orders_count: toNumberValue(entry.orders_count, 0),
+    is_quick_request_vendor: toBooleanValue(entry.is_quick_request_vendor, false),
+    is_print_vendor: toBooleanValue(entry.is_print_vendor, false),
   };
 }
 
@@ -121,6 +165,7 @@ function normalizeMenuItem(entry: unknown): MenuItem | null {
     vendor_id: toNumberValue(entry.vendor_id, 0) || undefined,
     predefined_product_id: toNumberValue(entry.predefined_product_id, 0) || null,
     title: toStringValue(entry.title, `Item ${id}`),
+    mrp: entry.mrp === null || entry.mrp === undefined ? null : toNumberValue(entry.mrp, 0),
     price: toNumberValue(entry.price, 0),
     is_available: toBooleanValue(entry.is_available, true),
     photo_url: toPublicAssetUrl(
@@ -130,8 +175,37 @@ function normalizeMenuItem(entry: unknown): MenuItem | null {
     ),
     product_name: predefined ? toNullableString(predefined.name) : toNullableString(entry.product_name),
     category: predefined ? toNullableString(predefined.category) : null,
+    subcategory:
+      toNullableString(entry.subcategory) ??
+      toNullableString(entry.subcategory_name) ??
+      (predefined ? toNullableString(predefined.subcategory) ?? toNullableString(predefined.subcategory_name) : null),
     description: predefined ? toNullableString(predefined.description) : null,
     building_name: building ? toNullableString(building.name) : null,
+    variants: asArray(entry.variants)
+      .map(normalizeMenuItemVariant)
+      .filter((variant): variant is MenuItemVariant => !!variant),
+  };
+}
+
+function normalizeMenuItemVariant(entry: unknown): MenuItemVariant | null {
+  if (!isRecord(entry)) {
+    return null;
+  }
+
+  const id = toNumberValue(entry.id, 0);
+  const name = toStringValue(entry.name, '');
+
+  if (!id || !name) {
+    return null;
+  }
+
+  return {
+    id,
+    product_variant_id: toNumberValue(entry.product_variant_id, 0) || null,
+    name,
+    mrp: entry.mrp === null || entry.mrp === undefined ? null : toNumberValue(entry.mrp, 0),
+    price: toNumberValue(entry.price, 0),
+    is_available: toBooleanValue(entry.is_available, true),
   };
 }
 
@@ -173,6 +247,61 @@ function normalizeQuickRequest(entry: unknown): QuickRequestDetails | null {
     office_wallet_credit_enabled: toBooleanValue(entry.office_wallet_credit_enabled, false),
     wallet_available: toBooleanValue(entry.wallet_available, false),
     wallet_balance: toNumberValue(entry.wallet_balance, 0),
+  };
+}
+
+function normalizePrintOrderFile(entry: unknown): PrintOrderFile | null {
+  if (!isRecord(entry)) {
+    return null;
+  }
+
+  const id = toNumberValue(entry.id, 0);
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    original_name: toStringValue(entry.original_name, `Print file ${id}`),
+    mime_type: toNullableString(entry.mime_type),
+    size_bytes: toNumberValue(entry.size_bytes, 0),
+    page_count: toNumberValue(entry.page_count, 0),
+    print_mode: toNullableString(entry.print_mode),
+    print_mode_label: toNullableString(entry.print_mode_label),
+    copies: toNumberValue(entry.copies, 1),
+    paper_size: toNullableString(entry.paper_size),
+    orientation: toNullableString(entry.orientation),
+    double_sided: toBooleanValue(entry.double_sided, false),
+    price_per_page: toNumberValue(entry.price_per_page, 0),
+    line_total: toNumberValue(entry.line_total, 0),
+    download_url: toNullableString(entry.download_url),
+    share_url: toNullableString(entry.share_url),
+  };
+}
+
+function normalizePrintOrder(entry: unknown): PrintOrderDetails | null {
+  if (!isRecord(entry)) {
+    return null;
+  }
+
+  const files = asArray(entry.files)
+    .map(normalizePrintOrderFile)
+    .filter((file): file is PrintOrderFile => !!file);
+
+  return {
+    print_mode: toNullableString(entry.print_mode),
+    copies: toNumberValue(entry.copies, 1),
+    copies_summary: toNullableString(entry.copies_summary),
+    paper_size: toNullableString(entry.paper_size),
+    double_sided: toBooleanValue(entry.double_sided, false),
+    status_note: toNullableString(entry.status_note),
+    file_count: toNumberValue(entry.file_count, files.length),
+    bw_price: toNumberValue(entry.bw_price, 0),
+    color_price: toNumberValue(entry.color_price, 0),
+    legal_price: toNumberValue(entry.legal_price, 0),
+    selected_price: toNumberValue(entry.selected_price, 0),
+    estimated_total: toNumberValue(entry.estimated_total, 0),
+    files,
   };
 }
 
@@ -437,12 +566,14 @@ function normalizeOrder(entry: unknown): VendorOrder | null {
     .map(normalizeOrderItem)
     .filter((item): item is VendorOrderItem => !!item);
   const building = isRecord(entry.building) ? entry.building : null;
+  const wing = isRecord(entry.wing) ? entry.wing : null;
   const office = isRecord(entry.office) ? entry.office : null;
   const user = isRecord(entry.user) ? entry.user : null;
   const deliveryPartner = isRecord(entry.delivery_partner) ? entry.delivery_partner : null;
   const quickRequest = normalizeQuickRequest(entry.quick_request);
+  const printOrder = normalizePrintOrder(entry.print_order);
   const allowedTransitions = asArray(entry.allowed_transitions)
-    .map((status) => toStringValue(status, '') as OrderStatus)
+    .map((status) => normalizeVendorOrderStatus(toStringValue(status, '')))
     .filter((status): status is OrderStatus => Boolean(status));
   const normalizedDeliveryPartner: AssignedDeliveryPartner | null =
     deliveryPartner && toNumberValue(deliveryPartner.id, 0)
@@ -457,7 +588,7 @@ function normalizeOrder(entry: unknown): VendorOrder | null {
   return {
     id,
     order_no: toStringValue(entry.order_no, `#${id}`),
-    status: toStringValue(entry.status, 'placed') as OrderStatus,
+    status: normalizeVendorOrderStatus(toStringValue(entry.status, 'placed')) ?? 'placed',
     subtotal: toNumberValue(entry.subtotal, 0),
     delivery_fee: toNumberValue(entry.delivery_fee, 0),
     total: toNumberValue(entry.total, 0),
@@ -467,8 +598,10 @@ function normalizeOrder(entry: unknown): VendorOrder | null {
     order_channel: toNullableString(entry.order_channel),
     ordered_by_name: toNullableString(entry.ordered_by_name),
     quick_request: quickRequest,
+    print_order: printOrder,
     placed_at: toNullableString(entry.placed_at),
     building_name: building ? toNullableString(building.name) : null,
+    wing_name: wing ? toNullableString(wing.name) : null,
     office_no: office ? toNullableString(office.office_no) : null,
     customer_name: user ? toNullableString(user.name) : null,
     customer_mobile: user ? toNullableString(user.mobile) : null,
@@ -476,6 +609,40 @@ function normalizeOrder(entry: unknown): VendorOrder | null {
     allowed_transitions: allowedTransitions,
     items,
   };
+}
+
+function normalizeVendorOrderStatus(status: string): OrderStatus | null {
+  switch (status) {
+    case 'pending':
+    case 'placed':
+      return 'placed';
+    case 'accepted':
+      return 'accepted';
+    case 'completed':
+    case 'delivered':
+      return 'delivered';
+    case 'rejected':
+    case 'cancelled':
+      return 'cancelled';
+    case 'preparing':
+      return 'preparing';
+    case 'out_for_delivery':
+      return 'out_for_delivery';
+    default:
+      return null;
+  }
+}
+
+function apiVendorOrderStatus(status: OrderStatus): 'accepted' | 'completed' | 'rejected' {
+  if (status === 'cancelled') {
+    return 'rejected';
+  }
+
+  if (status === 'delivered' || status === 'preparing' || status === 'out_for_delivery') {
+    return 'completed';
+  }
+
+  return 'accepted';
 }
 
 function normalizeDeliveryPartner(entry: unknown): VendorDeliveryPartner | null {
@@ -529,14 +696,23 @@ function normalizeProfile(payload: unknown): VendorProfile | null {
     role: toStringValue(envelope.role, 'vendor'),
     is_active: toBooleanValue(envelope.is_active, true),
     store_open: toBooleanValue(envelope.store_open, true),
+    store_hours_enabled: toBooleanValue(envelope.store_hours_enabled, false),
+    store_hours: normalizeStoreHours(envelope.store_hours),
+    store_available_now: toBooleanValue(envelope.store_available_now, toBooleanValue(envelope.store_open, true)),
     delivery_charge: toNumberValue(envelope.delivery_charge, 0),
-    below_minimum_order_mode:
-      toStringValue(envelope.below_minimum_order_mode, 'charge_delivery') === 'block_order'
-        ? 'block_order'
-        : 'charge_delivery',
+    estimated_waiting_time_minutes: envelope.estimated_waiting_time_minutes == null
+      ? null
+      : toNumberValue(envelope.estimated_waiting_time_minutes, 0),
+    below_minimum_order_mode: normalizeBelowMinimumOrderMode(envelope.below_minimum_order_mode),
     minimum_order_value: toNumberValue(envelope.minimum_order_value, 50),
     quick_request_tea_price: toNumberValue(envelope.quick_request_tea_price, 15),
     quick_request_coffee_price: toNumberValue(envelope.quick_request_coffee_price, 20),
+    can_manage_quick_request_pricing: toBooleanValue(envelope.can_manage_quick_request_pricing, false),
+    vendor_category: toNullableString(envelope.vendor_category),
+    print_bw_price: toNumberValue(envelope.print_bw_price, 2),
+    print_color_price: toNumberValue(envelope.print_color_price, 10),
+    print_legal_price: toNumberValue(envelope.print_legal_price, 5),
+    can_manage_print_pricing: toBooleanValue(envelope.can_manage_print_pricing, false),
     office_wallet_credit_enabled: toBooleanValue(envelope.office_wallet_credit_enabled, false),
     assigned_buildings: assignedBuildings,
     active_order_count: toNumberValue(envelope.active_order_count, 0),
@@ -565,6 +741,28 @@ function normalizeWalletTopUpReceipt(payload: unknown): VendorWalletTopUpReceipt
   };
 }
 
+function normalizeOfficeWalletLookupItem(entry: unknown): VendorOfficeWalletLookupItem | null {
+  if (!isRecord(entry)) {
+    return null;
+  }
+
+  const officeId = toNumberValue(entry.office_id, 0);
+  if (!officeId) {
+    return null;
+  }
+
+  return {
+    office_id: officeId,
+    office_name: toStringValue(entry.office_name, `Office ${officeId}`),
+    building_id: entry.building_id == null ? null : toNumberValue(entry.building_id, 0) || null,
+    building_name: toNullableString(entry.building_name),
+    label: toStringValue(entry.label, toStringValue(entry.office_name, `Office ${officeId}`)),
+    owner_name: toNullableString(entry.owner_name),
+    owner_mobile: toNullableString(entry.owner_mobile),
+    balance: toNumberValue(entry.balance, 0),
+  };
+}
+
 function normalizeCollection<T>(payload: unknown, normalizer: (entry: unknown) => T | null): T[] {
   return extractCollection(payload)
     .map(normalizer)
@@ -581,11 +779,18 @@ export async function updateVendorProfile(input: {
   email: string;
   mobile: string;
   store_open: boolean;
+  store_hours_enabled?: boolean;
+  store_hours?: StoreHours;
   delivery_charge: number;
+  estimated_waiting_time_minutes: number | null;
   below_minimum_order_mode: BelowMinimumOrderMode;
   minimum_order_value: number;
-  quick_request_tea_price: number;
-  quick_request_coffee_price: number;
+  building_id?: number;
+  quick_request_tea_price?: number;
+  quick_request_coffee_price?: number;
+  print_bw_price?: number;
+  print_color_price?: number;
+  print_legal_price?: number;
   office_wallet_credit_enabled: boolean;
 }): Promise<VendorProfile | null> {
   const payload = await apiClient.patch<unknown>(API_ENDPOINTS.vendorProfile, input);
@@ -598,12 +803,29 @@ export async function fetchAssignedBuildings(): Promise<Building[]> {
 }
 
 export async function topUpVendorWallet(input: {
-  mobile: string;
+  mobile?: string;
+  office_id?: number;
   amount: number;
   target_type: VendorWalletTargetType;
 }): Promise<VendorWalletTopUpReceipt | null> {
   const payload = await apiClient.post<unknown>(API_ENDPOINTS.vendorWalletTopUp, input);
   return normalizeWalletTopUpReceipt(payload);
+}
+
+export async function fetchVendorOfficeWallets(params: {
+  query: string;
+  buildingId?: number;
+}): Promise<VendorOfficeWalletLookupItem[]> {
+  const payload = await apiClient.get<unknown>(API_ENDPOINTS.vendorOfficeWallets, {
+    q: params.query,
+    building_id: params.buildingId,
+  });
+  const data = extractDataEnvelope(payload);
+  const record = isRecord(data) ? data : {};
+
+  return asArray(record.offices)
+    .map(normalizeOfficeWalletLookupItem)
+    .filter((entry): entry is VendorOfficeWalletLookupItem => !!entry);
 }
 
 export async function fetchVendorManualOffices(params?: {
@@ -656,7 +878,7 @@ export async function createVendorManualOfficeOrder(input: {
   office_id: number;
   tea_qty: number;
   coffee_qty: number;
-  payment_method: 'cash' | 'office_wallet';
+  payment_method: ManualOfficePaymentMethod;
   notes?: string;
 }): Promise<ManualOfficeOrderReceipt | null> {
   const payload = await apiClient.post<unknown>(API_ENDPOINTS.vendorManualOrders, input);
@@ -727,7 +949,20 @@ export async function createVendorMenuItem(input: {
 
 export async function updateVendorMenuItem(
   menuItemId: number,
-  input: { title: string; price: number; is_available?: boolean },
+  input: {
+    title: string;
+    price: number;
+    mrp?: number | null;
+    is_available?: boolean;
+    variants?: Array<{
+      id?: number;
+      product_variant_id?: number | null;
+      name: string;
+      mrp?: number | null;
+      price: number;
+      is_available?: boolean;
+    }>;
+  },
 ): Promise<MenuItem | null> {
   const payload = await apiClient.patch<unknown>(`${API_ENDPOINTS.vendorMenu}/${menuItemId}`, input);
   const data = extractDataEnvelope(payload);
@@ -758,18 +993,35 @@ export async function fetchVendorOrders(params: FetchOrdersParams): Promise<Vend
   return normalizeCollection(payload, normalizeOrder);
 }
 
+export async function fetchVendorOrder(orderId: number): Promise<VendorOrder | null> {
+  const payload = await apiClient.get<unknown>(`${API_ENDPOINTS.vendorOrders}/${orderId}`);
+  return normalizeOrder(extractDataEnvelope(payload));
+}
+
 export async function updateVendorOrderStatus(
   orderId: number,
   status: OrderStatus,
   cancelReason?: string,
 ): Promise<VendorOrder | null> {
+  const apiStatus = apiVendorOrderStatus(status);
   const payload = await apiClient.patch<unknown>(`${API_ENDPOINTS.vendorOrders}/${orderId}/status`, {
-    status,
+    status: apiStatus,
     ...(cancelReason ? { cancel_reason: cancelReason } : {}),
   });
 
   const data = extractDataEnvelope(payload);
-  return normalizeOrder(data);
+  const updatedOrder = normalizeOrder(data);
+
+  if (!updatedOrder) {
+    throw new Error('Server did not confirm the order status update.');
+  }
+
+  const expectedStatus = normalizeVendorOrderStatus(apiStatus);
+  if (expectedStatus && updatedOrder.status !== expectedStatus) {
+    throw new Error(`Server kept this order as ${updatedOrder.status}. Please refresh and try again.`);
+  }
+
+  return updatedOrder;
 }
 
 export async function assignVendorOrderDeliveryPartner(

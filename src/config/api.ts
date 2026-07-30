@@ -1,4 +1,4 @@
-const PLACEHOLDER_API_BASE_URL = 'https://YOUR-NGROK-URL.ngrok-free.app/api';
+const PRODUCTION_API_BASE_URL = 'https://deskdrop.in/api';
 
 function normalizeApiBaseUrl(value: string): string {
   return value.replace(/\/+$/, '');
@@ -7,10 +7,12 @@ function normalizeApiBaseUrl(value: string): string {
 const envApiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
 
 export const API_BASE_URL = normalizeApiBaseUrl(
-  envApiBaseUrl && envApiBaseUrl.length > 0 ? envApiBaseUrl : PLACEHOLDER_API_BASE_URL,
+  envApiBaseUrl && envApiBaseUrl.length > 0 ? envApiBaseUrl : PRODUCTION_API_BASE_URL,
 );
 
-export const API_BASE_URL_IS_PLACEHOLDER = API_BASE_URL === PLACEHOLDER_API_BASE_URL;
+export const API_BASE_URL_IS_PLACEHOLDER = false;
+
+export const APP_ID = 'com.deskdrop.vendor';
 
 export const API_ENDPOINTS = {
   authLogin: '/auth/login',
@@ -19,6 +21,7 @@ export const API_ENDPOINTS = {
   vendorMe: '/vendor/me',
   vendorProfile: '/vendor/profile',
   vendorBuildings: '/vendor/buildings',
+  vendorOfficeWallets: '/vendor/wallet/office-wallets',
   vendorWalletTopUp: '/vendor/wallet/top-up',
   vendorManualOffices: '/vendor/manual-offices',
   vendorManualOrders: '/vendor/manual-orders',

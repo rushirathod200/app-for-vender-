@@ -125,7 +125,9 @@ export function VendorManualOrderScreen() {
         receipt
           ? receipt.entry.payment_method === 'office_wallet'
             ? `Saved ${selectedOffice.office_name}. ${formatCurrency(receipt.entry.paid_amount)} cut from office wallet.`
-            : `Saved ${selectedOffice.office_name}. Cash entry recorded for ${formatCurrency(receipt.entry.total_amount)}.`
+            : receipt.entry.payment_method === 'pending'
+              ? `Saved ${selectedOffice.office_name}. ${formatCurrency(receipt.entry.pending_amount)} recorded as pending.`
+              : `Saved ${selectedOffice.office_name}. Cash entry recorded for ${formatCurrency(receipt.entry.total_amount)}.`
           : 'Manual office order saved.',
       );
       setSelectedOffice(null);

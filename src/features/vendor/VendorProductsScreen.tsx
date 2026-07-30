@@ -14,28 +14,40 @@ import {
 } from 'react-native';
 
 import {
-  createVendorMenuItem,
   deleteVendorMenuItem,
-  fetchCatalogProducts,
   updateVendorMenuItem,
 } from '../../api/vendorApi';
 import { useVendorApp } from '../../context/VendorAppContext';
-import { CatalogProduct, MenuItem } from '../../types/vendor';
+import { MenuItem } from '../../types/vendor';
 import { useAutoClearValue } from '../../utils/useAutoClearValue';
 import { useAndroidBackHandler } from '../../utils/useAndroidBackHandler';
-import { ActionButton, IconOnlyButton, SectionTitle } from '../shared/ui';
+import { ActionButton } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
 type ProductsMode =
   | { screen: 'list' }
-  | { screen: 'edit'; productId: number }
-  | { screen: 'add' };
+  | { screen: 'edit'; productId: number };
+
+type ProductAvailabilityTab = 'online' | 'offline';
+
+interface VariantDraft {
+  localId: string;
+  id?: number;
+  product_variant_id?: number | null;
+  name: string;
+  mrp: string;
+  price: string;
+  is_available: boolean;
+}
+
+function productDisplayGroup(product: MenuItem): string {
+  return product.subcategory ?? product.category ?? product.product_name ?? 'Menu Item';
+}
 
 export function VendorProductsScreen() {
   const {
     buildings,
     selectedBuildingId,
-    setSelectedBuildingId,
     products,
     productsLoading,
     error,
@@ -45,6 +57,9 @@ export function VendorProductsScreen() {
 
   const [mode, setMode] = useState<ProductsMode>({ screen: 'list' });
   const [actionError, setActionError] = useState<string | null>(null);
+  const [availabilityTab, setAvailabilityTab] = useState<ProductAvailabilityTab>('online');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('All');
 
   useAutoClearValue(actionError, () => setActionError(null));
 
@@ -60,6 +75,45 @@ export function VendorProductsScreen() {
     () => products.filter((product) => product.is_available).length,
     [products],
   );
+  const inactiveCount = useMemo(
+    () => products.filter((product) => !product.is_available).length,
+    [products],
+  );
+  const categories = useMemo(() => {
+    const seen = new Set<string>();
+
+    products.forEach((product) => {
+      const category = productDisplayGroup(product);
+
+      if (category) {
+        seen.add(category);
+      }
+    });
+
+    return ['All', ...Array.from(seen)];
+  }, [products]);
+  const filteredProducts = useMemo(() => {
+    const normalizedSearch = searchQuery.trim().toLowerCase();
+
+    return products.filter((product) => {
+      const matchesAvailability =
+        availabilityTab === 'online' ? product.is_available : !product.is_available;
+      const category = productDisplayGroup(product);
+      const matchesCategory = selectedCategory === 'All' || category === selectedCategory;
+      const matchesSearch =
+        !normalizedSearch ||
+        product.title.toLowerCase().includes(normalizedSearch) ||
+        category.toLowerCase().includes(normalizedSearch);
+
+      return matchesAvailability && matchesCategory && matchesSearch;
+    });
+  }, [availabilityTab, products, searchQuery, selectedCategory]);
+
+  useEffect(() => {
+    if (!categories.includes(selectedCategory)) {
+      setSelectedCategory('All');
+    }
+  }, [categories, selectedCategory]);
 
   useEffect(() => {
     if (mode.screen === 'edit' && !selectedProduct) {
@@ -92,36 +146,13 @@ export function VendorProductsScreen() {
       <EditPriceScreen
         product={selectedProduct}
         onBack={() => setMode({ screen: 'list' })}
-        onSave={async (nextPrice) => {
+        onSave={async (input) => {
           await updateVendorMenuItem(selectedProduct.id, {
-            title: selectedProduct.title,
-            price: nextPrice,
-            is_available: selectedProduct.is_available,
-          });
-          await refreshProducts({ force: true });
-          setMode({ screen: 'list' });
-        }}
-      />
-    );
-  }
-
-  if (mode.screen === 'add') {
-    return (
-      <AddProductScreen
-        buildingId={selectedBuildingId}
-        buildingName={selectedBuilding?.name ?? null}
-        onBack={() => setMode({ screen: 'list' })}
-        onAdd={async (catalogItem, price) => {
-          if (!selectedBuildingId) {
-            throw new Error('Select a building before adding a product.');
-          }
-
-          await createVendorMenuItem({
-            building_id: selectedBuildingId,
-            predefined_product_id: catalogItem.id,
-            title: catalogItem.name,
-            price,
-            is_available: true,
+            title: input.title,
+            price: input.price,
+            mrp: input.mrp,
+            is_available: input.is_available,
+            variants: input.variants,
           });
           await refreshProducts({ force: true });
           setMode({ screen: 'list' });
@@ -144,40 +175,69 @@ export function VendorProductsScreen() {
           />
         }
       >
-        <SectionTitle
-          title="Products"
-          subtitle={
-            selectedBuilding
-              ? `${activeCount} active products in ${selectedBuilding.name}`
-              : 'Select a building to manage the live menu'
-          }
-        />
+        <View style={styles.headerBlock}>
+          <Text style={styles.screenTitle}>Products</Text>
+          <Text style={styles.screenSubtitle}>
+            {`${activeCount} active products in your vendor menu`}
+          </Text>
+        </View>
 
-        {buildings.length ? (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.buildingChips}
+        <View style={styles.availabilityTabs}>
+          <Pressable
+            style={styles.availabilityTab}
+            onPress={() => setAvailabilityTab('online')}
           >
-            {buildings.map((building) => {
-              const isSelected = building.id === selectedBuildingId;
+            <Text style={[styles.availabilityTabText, availabilityTab === 'online' ? styles.availabilityTabTextActive : null]}>
+              Online ({activeCount})
+            </Text>
+            <View style={[styles.tabIndicator, availabilityTab === 'online' ? styles.tabIndicatorActive : null]} />
+          </Pressable>
+          <Pressable
+            style={styles.availabilityTab}
+            onPress={() => setAvailabilityTab('offline')}
+          >
+            <Text style={[styles.availabilityTabText, availabilityTab === 'offline' ? styles.availabilityTabTextActive : null]}>
+              Offline ({inactiveCount})
+            </Text>
+            <View style={[styles.tabIndicator, availabilityTab === 'offline' ? styles.tabIndicatorActive : null]} />
+          </Pressable>
+        </View>
 
-              return (
-                <Pressable
-                  key={building.id}
-                  style={[styles.buildingChip, isSelected ? styles.buildingChipActive : null]}
-                  onPress={() => setSelectedBuildingId(building.id)}
+        <View style={styles.searchBox}>
+          <Ionicons name="search-outline" size={22} color="#9a9aa4" />
+          <TextInput
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            style={styles.searchInput}
+            placeholder="Search your menu"
+            placeholderTextColor="#a2a2aa"
+          />
+        </View>
+
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.categoryChips}
+        >
+          {categories.map((category) => {
+            const isSelected = category === selectedCategory;
+
+            return (
+              <Pressable
+                key={category}
+                style={[styles.categoryChip, isSelected ? styles.categoryChipActive : null]}
+                onPress={() => setSelectedCategory(category)}
+              >
+                <Text
+                  numberOfLines={1}
+                  style={[styles.categoryChipText, isSelected ? styles.categoryChipTextActive : null]}
                 >
-                  <Text style={[styles.buildingChipText, isSelected ? styles.buildingChipTextActive : null]}>
-                    {building.name}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
-        ) : null}
-
-        {selectedBuilding?.address ? <Text style={styles.buildingAddress}>{selectedBuilding.address}</Text> : null}
+                  {category}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
 
         {Array.from(new Set([error, actionError].filter((message): message is string => !!message))).map((message) => (
           <Text key={message} style={styles.errorText}>{message}</Text>
@@ -189,26 +249,31 @@ export function VendorProductsScreen() {
           <Text style={styles.emptyText}>No menu items found for this building.</Text>
         ) : null}
 
-        {products.map((product) => (
+        {selectedBuilding && products.length > 0 && filteredProducts.length === 0 ? (
+          <Text style={styles.emptyText}>No products found in this filter.</Text>
+        ) : null}
+
+        {filteredProducts.map((product) => (
           <View key={product.id} style={[styles.productCard, !product.is_available ? styles.productCardInactive : null]}>
-            <View style={styles.productTopRow}>
-              <View style={styles.productMainWrap}>
-                <View style={styles.mediaWrap}>
-                  {product.photo_url ? (
-                    <Image source={{ uri: product.photo_url }} style={styles.productImage} />
-                  ) : (
-                    <Ionicons name="fast-food-outline" size={20} color={tokens.colors.vendorPrimary} />
-                  )}
-                </View>
+            <View style={styles.mediaWrap}>
+              {product.photo_url ? (
+                <Image source={{ uri: product.photo_url }} style={styles.productImage} />
+              ) : (
+                <Ionicons name="fast-food-outline" size={24} color={tokens.colors.vendorPrimary} />
+              )}
+            </View>
 
-                <View style={styles.productTextWrap}>
-                  <Text numberOfLines={1} style={[styles.productName, !product.is_available ? styles.productNameInactive : null]}>
-                    {product.title}
-                  </Text>
-                  <Text style={styles.productCategory}>{product.category ?? product.product_name ?? 'Menu Item'}</Text>
-                </View>
+            <View style={styles.productTextWrap}>
+              <Text numberOfLines={1} style={[styles.productName, !product.is_available ? styles.productNameInactive : null]}>
+                {product.title}
+              </Text>
+              <Text style={styles.productCategory}>{productDisplayGroup(product)}</Text>
+              <View style={[styles.priceBadge, !product.is_available ? styles.priceBadgeInactive : null]}>
+                <Text style={[styles.priceText, !product.is_available ? styles.priceTextInactive : null]}>₹{product.price}</Text>
               </View>
+            </View>
 
+            <View style={styles.productControls}>
               <Pressable
                 onPress={() => {
                   void toggleProductActive(product).catch((toggleError) => {
@@ -219,16 +284,13 @@ export function VendorProductsScreen() {
               >
                 <View style={[styles.switchDot, product.is_available ? styles.switchDotActive : styles.switchDotInactive]} />
               </Pressable>
-            </View>
-
-            <View style={styles.productBottomRow}>
-              <View style={[styles.priceBadge, !product.is_available ? styles.priceBadgeInactive : null]}>
-                <Text style={[styles.priceText, !product.is_available ? styles.priceTextInactive : null]}>₹{product.price}</Text>
-              </View>
 
               <View style={styles.rightActions}>
-                <IconOnlyButton onPress={() => setMode({ screen: 'edit', productId: product.id })} icon="create-outline" />
-                <IconOnlyButton
+                <Pressable style={styles.editActionButton} onPress={() => setMode({ screen: 'edit', productId: product.id })}>
+                  <Ionicons name="create-outline" size={22} color="#6f70c8" />
+                </Pressable>
+                <Pressable
+                  style={styles.deleteActionButton}
                   onPress={() => {
                     void deleteVendorMenuItem(product.id)
                       .then(() => refreshProducts({ force: true }))
@@ -236,22 +298,15 @@ export function VendorProductsScreen() {
                         setActionError(deleteError instanceof Error ? deleteError.message : 'Could not delete product.');
                       });
                   }}
-                  icon="trash-outline"
-                  tone="danger"
-                />
+                >
+                  <Ionicons name="trash-outline" size={22} color="#df666c" />
+                </Pressable>
               </View>
             </View>
           </View>
         ))}
       </ScrollView>
 
-      <Pressable
-        style={[styles.fabButton, !selectedBuilding ? styles.fabButtonDisabled : null]}
-        onPress={() => setMode({ screen: 'add' })}
-        disabled={!selectedBuilding}
-      >
-        <Ionicons name="add" size={30} color="#ffffff" />
-      </Pressable>
     </View>
   );
 }
@@ -262,18 +317,83 @@ function EditPriceScreen({
   onBack,
 }: {
   product: MenuItem;
-  onSave: (price: number) => Promise<void>;
+  onSave: (input: {
+    title: string;
+    price: number;
+    mrp: number | null;
+    is_available: boolean;
+    variants: Array<{
+      id?: number;
+      product_variant_id?: number | null;
+      name: string;
+      mrp?: number | null;
+      price: number;
+      is_available: boolean;
+    }>;
+  }) => Promise<void>;
   onBack: () => void;
 }) {
   const scrollRef = useRef<ScrollView | null>(null);
+  const [titleInput, setTitleInput] = useState(product.title);
+  const [mrpInput, setMrpInput] = useState(product.mrp ? String(product.mrp) : '');
   const [priceInput, setPriceInput] = useState(String(product.price));
+  const [isAvailable, setIsAvailable] = useState(product.is_available);
+  const [variants, setVariants] = useState<VariantDraft[]>(
+    product.variants.map((variant) => ({
+      localId: `existing-${variant.id}`,
+      id: variant.id,
+      product_variant_id: variant.product_variant_id,
+      name: variant.name,
+      mrp: variant.mrp === null ? '' : String(variant.mrp),
+      price: String(variant.price),
+      is_available: variant.is_available,
+    })),
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useAutoClearValue(error, () => setError(null));
 
   const parsedPrice = Number(priceInput);
-  const isValid = Number.isFinite(parsedPrice) && parsedPrice > 0;
+  const parsedMrp = mrpInput.trim() === '' ? null : Number(mrpInput);
+  const variantPayload = variants
+    .map((variant) => {
+      const name = variant.name.trim();
+      const price = Number(variant.price);
+      const mrp = variant.mrp.trim() === '' ? null : Number(variant.mrp);
+
+      if (!name) {
+        return null;
+      }
+
+      return {
+        id: variant.id,
+        product_variant_id: variant.product_variant_id,
+        name,
+        mrp,
+        price,
+        is_available: variant.is_available,
+      };
+    })
+    .filter((variant): variant is NonNullable<typeof variant> => !!variant);
+  const variantsValid = variantPayload.every(
+    (variant) =>
+      Number.isFinite(variant.price) &&
+      variant.price >= 0 &&
+      (variant.mrp === null || (Number.isFinite(variant.mrp) && variant.mrp >= 0)),
+  );
+  const isValid =
+    titleInput.trim().length > 0 &&
+    Number.isFinite(parsedPrice) &&
+    parsedPrice > 0 &&
+    (parsedMrp === null || (Number.isFinite(parsedMrp) && parsedMrp >= 0)) &&
+    variantsValid;
+
+  const updateVariant = (localId: string, patch: Partial<VariantDraft>): void => {
+    setVariants((current) =>
+      current.map((variant) => (variant.localId === localId ? { ...variant, ...patch } : variant)),
+    );
+  };
 
   return (
     <KeyboardAvoidingView
@@ -303,13 +423,37 @@ function EditPriceScreen({
             )}
           </View>
           <Text style={styles.editName}>{product.title}</Text>
-          <Text style={styles.editCategory}>{product.category ?? product.product_name ?? 'Menu Item'}</Text>
+          <Text style={styles.editCategory}>{productDisplayGroup(product)}</Text>
 
-          <Text style={styles.inputLabel}>New Price (₹)</Text>
+          <Text style={styles.inputLabel}>Product Title</Text>
+          <TextInput
+            value={titleInput}
+            onChangeText={setTitleInput}
+            style={styles.priceInput}
+            placeholder="Product title"
+            placeholderTextColor="#9a9aa3"
+          />
+
+          <Text style={styles.inputLabel}>MRP (₹)</Text>
+          <TextInput
+            value={mrpInput}
+            onChangeText={(value) => setMrpInput(value.replace(/[^0-9.]/g, ''))}
+            keyboardType="decimal-pad"
+            onFocus={() => {
+              setTimeout(() => {
+                scrollRef.current?.scrollToEnd({ animated: true });
+              }, 120);
+            }}
+            style={styles.priceInput}
+            placeholder="Optional MRP"
+            placeholderTextColor="#9a9aa3"
+          />
+
+          <Text style={styles.inputLabel}>Default Discount Price (₹)</Text>
           <TextInput
             value={priceInput}
-            onChangeText={(value) => setPriceInput(value.replace(/[^0-9]/g, ''))}
-            keyboardType="number-pad"
+            onChangeText={(value) => setPriceInput(value.replace(/[^0-9.]/g, ''))}
+            keyboardType="decimal-pad"
             onFocus={() => {
               setTimeout(() => {
                 scrollRef.current?.scrollToEnd({ animated: true });
@@ -319,6 +463,100 @@ function EditPriceScreen({
             placeholder="Enter price"
             placeholderTextColor="#9a9aa3"
           />
+
+          <View style={styles.editOnlineRow}>
+            <Text style={styles.editOnlineText}>Product Online</Text>
+            <Pressable
+              onPress={() => setIsAvailable((current) => !current)}
+              style={[styles.switchWrap, isAvailable ? styles.switchWrapActive : styles.switchWrapInactive]}
+            >
+              <View style={[styles.switchDot, isAvailable ? styles.switchDotActive : styles.switchDotInactive]} />
+            </Pressable>
+          </View>
+        </View>
+
+        <View style={styles.variantsCard}>
+          <View style={styles.variantsHeader}>
+            <View>
+              <Text style={styles.variantsTitle}>Variants</Text>
+              <Text style={styles.variantsSubtitle}>Name, MRP, discount price</Text>
+            </View>
+            <Pressable
+              style={styles.addVariantButton}
+              onPress={() => {
+                setVariants((current) => [
+                  ...current,
+                  {
+                    localId: `new-${Date.now()}-${current.length}`,
+                    name: '',
+                    mrp: '',
+                    price: '',
+                    is_available: true,
+                  },
+                ]);
+              }}
+            >
+              <Ionicons name="add" size={18} color="#ffffff" />
+              <Text style={styles.addVariantText}>Add</Text>
+            </Pressable>
+          </View>
+          {variants.length === 0 ? (
+            <Text style={styles.variantsEmpty}>No variants. This product uses the default price above.</Text>
+          ) : null}
+
+          {variants.map((variant) => (
+            <View key={variant.localId} style={styles.variantRow}>
+              <View style={styles.variantRowHeader}>
+                <Text style={styles.variantRowTitle}>{variant.name.trim() || 'New Variant'}</Text>
+                <View style={styles.variantRowActions}>
+                  <Pressable
+                    onPress={() => updateVariant(variant.localId, { is_available: !variant.is_available })}
+                    style={[styles.variantSwitchWrap, variant.is_available ? styles.switchWrapActive : styles.switchWrapInactive]}
+                  >
+                    <View style={[styles.variantSwitchDot, variant.is_available ? styles.switchDotActive : styles.switchDotInactive]} />
+                  </Pressable>
+                  <Pressable
+                    style={styles.variantDeleteButton}
+                    onPress={() => setVariants((current) => current.filter((item) => item.localId !== variant.localId))}
+                  >
+                    <Ionicons name="trash-outline" size={18} color="#df666c" />
+                  </Pressable>
+                </View>
+              </View>
+
+              <TextInput
+                value={variant.name}
+                onChangeText={(value) => updateVariant(variant.localId, { name: value })}
+                style={styles.variantInput}
+                placeholder="Variant name"
+                placeholderTextColor="#9a9aa3"
+              />
+              <View style={styles.variantPriceRow}>
+                <View style={styles.variantField}>
+                  <Text style={styles.variantFieldLabel}>MRP</Text>
+                  <TextInput
+                    value={variant.mrp}
+                    onChangeText={(value) => updateVariant(variant.localId, { mrp: value.replace(/[^0-9.]/g, '') })}
+                    keyboardType="decimal-pad"
+                    style={styles.variantInput}
+                    placeholder="0"
+                    placeholderTextColor="#9a9aa3"
+                  />
+                </View>
+                <View style={styles.variantField}>
+                  <Text style={styles.variantFieldLabel}>Discount Price</Text>
+                  <TextInput
+                    value={variant.price}
+                    onChangeText={(value) => updateVariant(variant.localId, { price: value.replace(/[^0-9.]/g, '') })}
+                    keyboardType="decimal-pad"
+                    style={styles.variantInput}
+                    placeholder="0"
+                    placeholderTextColor="#9a9aa3"
+                  />
+                </View>
+              </View>
+            </View>
+          ))}
         </View>
 
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
@@ -332,7 +570,13 @@ function EditPriceScreen({
 
             setSaving(true);
             setError(null);
-            void onSave(parsedPrice)
+            void onSave({
+              title: titleInput.trim(),
+              price: parsedPrice,
+              mrp: parsedMrp,
+              is_available: isAvailable,
+              variants: variantPayload,
+            })
               .catch((saveError) => {
                 setError(saveError instanceof Error ? saveError.message : 'Could not update product.');
               })
@@ -347,213 +591,41 @@ function EditPriceScreen({
   );
 }
 
-function AddProductScreen({
-  buildingId,
-  buildingName,
-  onBack,
-  onAdd,
-}: {
-  buildingId: number | null;
-  buildingName: string | null;
-  onBack: () => void;
-  onAdd: (selected: CatalogProduct, price: number) => Promise<void>;
-}) {
-  const scrollRef = useRef<ScrollView | null>(null);
-  const [catalog, setCatalog] = useState<CatalogProduct[]>([]);
-  const [selectedCatalogId, setSelectedCatalogId] = useState<number | null>(null);
-  const [priceInput, setPriceInput] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useAutoClearValue(error, () => setError(null));
-
-  useEffect(() => {
-    let isMounted = true;
-
-    const loadCatalog = async (showLoader: boolean): Promise<void> => {
-      if (!buildingId) {
-        if (isMounted) {
-          setCatalog([]);
-          setLoading(false);
-        }
-        return;
-      }
-
-      if (showLoader && isMounted) {
-        setLoading(true);
-      }
-
-      try {
-        const items = await fetchCatalogProducts({ buildingId });
-        const available = items.filter((item) => item.is_active && !item.is_added);
-
-        if (!isMounted) {
-          return;
-        }
-
-        setCatalog(available);
-        setSelectedCatalogId((current) =>
-          current && available.some((item) => item.id === current) ? current : (available[0]?.id ?? null),
-        );
-        setError(null);
-      } catch (loadError) {
-        if (!isMounted) {
-          return;
-        }
-
-        setError(loadError instanceof Error ? loadError.message : 'Could not load catalog products.');
-      } finally {
-        if (showLoader && isMounted) {
-          setLoading(false);
-        }
-      }
-    };
-
-    void loadCatalog(true);
-
-    return () => {
-      isMounted = false;
-    };
-  }, [buildingId]);
-
-  const selectedItem = useMemo(
-    () => catalog.find((item) => item.id === selectedCatalogId) ?? null,
-    [catalog, selectedCatalogId],
-  );
-
-  const parsedPrice = Number(priceInput);
-  const canSubmit = !!selectedItem && Number.isFinite(parsedPrice) && parsedPrice > 0 && !saving;
-
-  return (
-    <KeyboardAvoidingView
-      style={styles.root}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 18 : 0}
-    >
-      <ScrollView
-        ref={scrollRef}
-        contentContainerStyle={[styles.content, styles.keyboardContentGrow]}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-      >
-        <View style={styles.topNavRow}>
-          <Pressable style={styles.backBtn} onPress={onBack}>
-            <Ionicons name="close" size={20} color="#75757f" />
-          </Pressable>
-          <Text style={styles.editTitle}>Add Product</Text>
-        </View>
-
-        <Text style={styles.addSubtitle}>
-          {buildingName ? `Select a product for ${buildingName}` : 'Select a product from the vendor catalog'}
-        </Text>
-
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
-
-        {loading ? <Text style={styles.emptyText}>Loading catalog...</Text> : null}
-
-        {!loading && catalog.length === 0 ? (
-          <View style={styles.emptyCatalogCard}>
-            <Text style={styles.emptyCatalogText}>All available catalog products are already added.</Text>
-          </View>
-        ) : null}
-
-        {!loading
-          ? catalog.map((item) => {
-              const isSelected = item.id === selectedCatalogId;
-
-              return (
-                <Pressable
-                  key={item.id}
-                  onPress={() => setSelectedCatalogId(item.id)}
-                  style={[styles.catalogCard, isSelected ? styles.catalogCardSelected : null]}
-                >
-                  <View style={styles.catalogMain}>
-                    <View style={styles.catalogMediaWrap}>
-                      {item.default_image_url ? (
-                        <Image source={{ uri: item.default_image_url }} style={styles.catalogMediaImage} />
-                      ) : (
-                        <Ionicons name="fast-food-outline" size={20} color={tokens.colors.vendorPrimary} />
-                      )}
-                    </View>
-                    <View style={styles.catalogTextWrap}>
-                      <Text numberOfLines={1} style={styles.catalogName}>{item.name}</Text>
-                      <Text style={styles.catalogCategory}>{item.category ?? 'Product'}</Text>
-                    </View>
-                  </View>
-
-                  <View style={[styles.catalogSelectDot, isSelected ? styles.catalogSelectDotActive : null]}>
-                    {isSelected ? <Ionicons name="checkmark" size={14} color="#ffffff" /> : null}
-                  </View>
-                </Pressable>
-              );
-            })
-          : null}
-
-        <View style={styles.priceBox}>
-          <Text style={styles.inputLabel}>Set Price for {selectedItem?.name ?? 'Selected Product'} (₹)</Text>
-          <TextInput
-            value={priceInput}
-            onChangeText={(value) => setPriceInput(value.replace(/[^0-9]/g, ''))}
-            keyboardType="number-pad"
-            onFocus={() => {
-              setTimeout(() => {
-                scrollRef.current?.scrollToEnd({ animated: true });
-              }, 120);
-            }}
-            style={styles.priceInput}
-            placeholder="Enter price e.g. 120"
-            placeholderTextColor="#9a9aa3"
-          />
-        </View>
-
-        <ActionButton
-          label={saving ? 'Adding...' : 'Add Product'}
-          disabled={!canSubmit}
-          onPress={() => {
-            if (!selectedItem || !canSubmit) {
-              return;
-            }
-
-            setSaving(true);
-            setError(null);
-            void onAdd(selectedItem, parsedPrice)
-              .catch((addError) => {
-                setError(addError instanceof Error ? addError.message : 'Could not add product.');
-              })
-              .finally(() => {
-                setSaving(false);
-              });
-          }}
-        />
-      </ScrollView>
-    </KeyboardAvoidingView>
-  );
-}
-
 const styles = StyleSheet.create({
   root: {
     flex: 1,
   },
   content: {
     paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 90,
-    gap: 10,
+    paddingTop: 18,
+    paddingBottom: 84,
+    gap: 9,
   },
   keyboardContentGrow: {
     flexGrow: 1,
+  },
+  headerBlock: {
+    gap: 6,
+  },
+  screenTitle: {
+    color: '#19191f',
+    fontSize: 26,
+    fontWeight: '900',
+  },
+  screenSubtitle: {
+    color: '#777782',
+    fontSize: 14,
+    fontWeight: '500',
   },
   buildingChips: {
     gap: 8,
     paddingRight: 16,
   },
   buildingChip: {
-    minHeight: 34,
-    borderRadius: 999,
+    minHeight: 36,
+    borderRadius: 18,
     backgroundColor: '#ececef',
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -562,17 +634,82 @@ const styles = StyleSheet.create({
   },
   buildingChipText: {
     color: '#7f7f89',
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
   },
   buildingChipTextActive: {
     color: '#ffffff',
   },
-  buildingAddress: {
-    color: '#8b8b95',
-    fontSize: 12,
-    fontWeight: '600',
-    marginTop: -2,
+  availabilityTabs: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: '#dedee4',
+    marginTop: 4,
+  },
+  availabilityTab: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 8,
+  },
+  availabilityTabText: {
+    color: '#6f6f7a',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  availabilityTabTextActive: {
+    color: tokens.colors.vendorPrimary,
+  },
+  tabIndicator: {
+    width: '100%',
+    height: 3,
+    backgroundColor: 'transparent',
+  },
+  tabIndicatorActive: {
+    backgroundColor: tokens.colors.vendorPrimary,
+  },
+  searchBox: {
+    height: 48,
+    borderRadius: 16,
+    backgroundColor: '#ffffff',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    shadowColor: '#b9b9c4',
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 1,
+  },
+  searchInput: {
+    flex: 1,
+    color: '#262630',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  categoryChips: {
+    gap: 8,
+    paddingRight: 16,
+  },
+  categoryChip: {
+    minHeight: 42,
+    maxWidth: 150,
+    borderRadius: 21,
+    backgroundColor: '#f4f4f6',
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryChipActive: {
+    backgroundColor: tokens.colors.vendorPrimary,
+  },
+  categoryChipText: {
+    color: '#5f6070',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  categoryChipTextActive: {
+    color: '#ffffff',
   },
   errorText: {
     color: tokens.colors.danger,
@@ -585,31 +722,26 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   productCard: {
-    backgroundColor: '#f7f7f8',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#ededf2',
+    backgroundColor: '#ffffff',
+    borderRadius: 18,
     padding: 10,
-    gap: 8,
+    minHeight: 96,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    shadowColor: '#b5b5bf',
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 3,
   },
   productCardInactive: {
     opacity: 0.66,
   },
-  productTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  productMainWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flex: 1,
-  },
   mediaWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    width: 54,
+    height: 54,
+    borderRadius: 14,
     backgroundColor: '#f2f2f4',
     alignItems: 'center',
     justifyContent: 'center',
@@ -621,10 +753,11 @@ const styles = StyleSheet.create({
   },
   productTextWrap: {
     flex: 1,
+    minWidth: 0,
   },
   productName: {
     color: '#212127',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '900',
   },
   productNameInactive: {
@@ -633,15 +766,15 @@ const styles = StyleSheet.create({
   productCategory: {
     color: '#8b8b95',
     fontSize: 12,
-    fontWeight: '600',
-    marginTop: 2,
+    fontWeight: '700',
+    marginTop: 3,
   },
   switchWrap: {
-    width: 40,
-    height: 24,
-    borderRadius: 12,
+    width: 48,
+    height: 28,
+    borderRadius: 14,
     justifyContent: 'center',
-    paddingHorizontal: 2,
+    paddingHorizontal: 4,
   },
   switchWrapActive: {
     backgroundColor: tokens.colors.vendorPrimary,
@@ -652,9 +785,9 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
   },
   switchDot: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
   },
   switchDotActive: {
     backgroundColor: '#ffffff',
@@ -662,16 +795,13 @@ const styles = StyleSheet.create({
   switchDotInactive: {
     backgroundColor: '#f2f2f4',
   },
-  productBottomRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
   priceBadge: {
     backgroundColor: '#fff1e8',
+    alignSelf: 'flex-start',
     borderRadius: 10,
-    paddingVertical: 5,
-    paddingHorizontal: 10,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    marginTop: 8,
   },
   priceBadgeInactive: {
     backgroundColor: '#f4e5d9',
@@ -684,17 +814,37 @@ const styles = StyleSheet.create({
   priceTextInactive: {
     color: '#d69d70',
   },
+  productControls: {
+    alignItems: 'flex-end',
+    gap: 12,
+  },
   rightActions: {
     flexDirection: 'row',
     gap: 8,
   },
+  editActionButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 13,
+    backgroundColor: '#f1f0ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteActionButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 13,
+    backgroundColor: '#fff0f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   fabButton: {
     position: 'absolute',
-    right: 18,
-    bottom: 14,
-    width: 54,
-    height: 54,
-    borderRadius: 18,
+    right: 20,
+    bottom: 78,
+    width: 76,
+    height: 76,
+    borderRadius: 24,
     backgroundColor: tokens.colors.vendorPrimary,
     alignItems: 'center',
     justifyContent: 'center',
@@ -733,7 +883,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 14,
     alignItems: 'center',
-    gap: 6,
+    gap: 9,
   },
   editMediaWrap: {
     width: 72,
@@ -755,14 +905,14 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   editCategory: {
-    fontSize: 12,
+    fontSize: 14,
     color: '#8c8c94',
     fontWeight: '600',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   inputLabel: {
     alignSelf: 'flex-start',
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '700',
     color: '#34343c',
   },
@@ -777,6 +927,137 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
     color: '#232328',
+  },
+  editOnlineRow: {
+    width: '100%',
+    minHeight: 52,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#e7e7ed',
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  editOnlineText: {
+    color: '#232328',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  variantsCard: {
+    backgroundColor: '#f7f7f8',
+    borderWidth: 1,
+    borderColor: '#ededf2',
+    borderRadius: 16,
+    padding: 12,
+    gap: 12,
+  },
+  variantsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  addVariantButton: {
+    minHeight: 36,
+    borderRadius: 13,
+    backgroundColor: tokens.colors.vendorPrimary,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  addVariantText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  variantsTitle: {
+    color: '#232328',
+    fontSize: 20,
+    fontWeight: '900',
+  },
+  variantsSubtitle: {
+    color: '#8b8b95',
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  variantsEmpty: {
+    color: '#8b8b95',
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 18,
+  },
+  variantRow: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e6e6ec',
+    backgroundColor: '#ffffff',
+    padding: 9,
+    gap: 9,
+  },
+  variantRowHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  variantRowTitle: {
+    flex: 1,
+    color: '#232328',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  variantRowActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  variantSwitchWrap: {
+    width: 42,
+    height: 26,
+    borderRadius: 13,
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  variantSwitchDot: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+  },
+  variantDeleteButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 11,
+    backgroundColor: '#fff0f0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  variantInput: {
+    height: 40,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e4e4ea',
+    backgroundColor: '#f1f1f4',
+    paddingHorizontal: 12,
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#232328',
+  },
+  variantPriceRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  variantField: {
+    flex: 1,
+    minWidth: 0,
+    gap: 5,
+  },
+  variantFieldLabel: {
+    color: '#6f6f78',
+    fontSize: 11,
+    fontWeight: '900',
   },
   addSubtitle: {
     color: '#7f7f89',

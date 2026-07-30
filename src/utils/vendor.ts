@@ -67,11 +67,12 @@ export function formatRelativeTime(value: string | null): string {
 }
 
 export function buildVendorOrderLocation(order: VendorOrder): string {
-  if (order.building_name && order.office_no) {
-    return `${order.building_name} • ${order.office_no}`;
-  }
+  const wingName = order.wing_name?.trim() || null;
+  const segments = [order.building_name, wingName, order.office_no]
+    .map((segment) => segment?.trim())
+    .filter((segment): segment is string => Boolean(segment));
 
-  return order.building_name ?? order.office_no ?? 'Location unavailable';
+  return segments.length > 0 ? segments.join(' • ') : 'Location unavailable';
 }
 
 export function resolveVendorDisplayName(name: string | null, buildings: Building[]): string {

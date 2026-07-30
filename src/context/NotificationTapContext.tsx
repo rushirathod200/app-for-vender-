@@ -1,7 +1,12 @@
 import React, { createContext, useCallback, useContext, useRef } from 'react';
 
+export type NotificationOrderAction = 'accepted' | 'rejected' | null;
+
 interface NotificationTapEvent {
   orderId: number | null;
+  action: NotificationOrderAction;
+  reason: string | null;
+  handledExternally: boolean;
   requestId: number;
 }
 
@@ -9,7 +14,12 @@ type NotificationTapHandler = (event: NotificationTapEvent) => void;
 
 interface NotificationTapContextValue {
   registerHandler: (handler: NotificationTapHandler) => () => void;
-  handleNotificationTap: (orderId: number | null) => void;
+  handleNotificationTap: (
+    orderId: number | null,
+    action?: NotificationOrderAction,
+    reason?: string | null,
+    handledExternally?: boolean,
+  ) => void;
 }
 
 const NotificationTapContext = createContext<NotificationTapContextValue | undefined>(undefined);
@@ -32,11 +42,19 @@ export function NotificationTapProvider({ children }: { children: React.ReactNod
     };
   }, []);
 
-  const handleNotificationTap = useCallback((orderId: number | null) => {
+  const handleNotificationTap = useCallback((
+    orderId: number | null,
+    action: NotificationOrderAction = null,
+    reason: string | null = null,
+    handledExternally = false,
+  ) => {
     requestIdRef.current += 1;
 
     const event: NotificationTapEvent = {
       orderId,
+      action,
+      reason,
+      handledExternally,
       requestId: requestIdRef.current,
     };
 

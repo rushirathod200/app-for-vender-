@@ -4,12 +4,18 @@ import { Platform } from 'react-native';
 
 import { fetchCurrentAuthUser, loginWithEmailPassword, logoutCurrentSession } from '../api/authApi';
 import { registerDeliveryDeviceToken, registerVendorDeviceToken } from '../api/deviceTokenApi';
-import { apiClient } from '../api/httpClient';
+import { APP_ID } from '../config/api';
+import { ApiError, apiClient } from '../api/httpClient';
 import { AuthUser } from '../types/auth';
 import {
+  clearStoredPushToken,
   clearStoredAuth,
+  getOrCreatePushDeviceId,
+  getStoredPushToken,
   getStoredAuthToken,
+  getStoredAuthUser,
   setStoredAuthToken,
+  setStoredPushToken,
   setStoredAuthUser,
 } from '../utils/secureStorage';
 import {
@@ -17,6 +23,7 @@ import {
   getCurrentPushTokenAsync,
   registerForPushNotificationsAsync,
 } from '../utils/pushNotifications';
+import { clearNativeOverlayAuth, saveNativeOverlayAuth } from '../utils/nativeOverlayAuth';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -33,6 +40,41 @@ function logPushRegistrationError(error: unknown): void {
   }
 }
 
+function parseStoredMobileUser(value: string | null): AuthUser | null {
+  if (!value) return null;
+
+  try {
+    const parsed = JSON.parse(value) as Partial<AuthUser>;
+
+    if (
+      typeof parsed.id !== 'number'
+      || (parsed.role !== 'vendor' && parsed.role !== 'delivery')
+    ) {
+      return null;
+    }
+
+    return {
+      id: parsed.id,
+      name: typeof parsed.name === 'string' ? parsed.name : null,
+      email: typeof parsed.email === 'string' ? parsed.email : null,
+      mobile: typeof parsed.mobile === 'string' ? parsed.mobile : '',
+      role: parsed.role,
+      is_active: parsed.is_active,
+      store_open: parsed.store_open,
+      delivery_charge: parsed.delivery_charge,
+      below_minimum_order_mode: parsed.below_minimum_order_mode,
+      minimum_order_value: parsed.minimum_order_value,
+      office_wallet_credit_enabled: parsed.office_wallet_credit_enabled,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function shouldClearStoredSession(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 401 || error.status === 403);
+}
+
 async function registerPushTokenIfAvailable(
   role: 'vendor' | 'delivery',
   tokenOverride?: string,
@@ -41,12 +83,15 @@ async function registerPushTokenIfAvailable(
   if (!token) return;
   const platform = Platform.OS === 'android' ? 'android' : 'ios';
   const deviceName = Device.modelName ?? undefined;
+  const deviceId = await getOrCreatePushDeviceId();
 
   if (role === 'vendor') {
-    await registerVendorDeviceToken({ token, platform, device_name: deviceName });
+    await registerVendorDeviceToken({ token, device_id: deviceId, app_id: APP_ID, platform, device_name: deviceName });
   } else {
-    await registerDeliveryDeviceToken({ token, platform, device_name: deviceName });
+    await registerDeliveryDeviceToken({ token, device_id: deviceId, app_id: APP_ID, platform, device_name: deviceName });
   }
+
+  await setStoredPushToken(token);
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -69,9 +114,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ) {
           apiClient.setToken(currentToken);
 
-          const deviceToken = await getCurrentPushTokenAsync();
+          const deviceToken = (await getCurrentPushTokenAsync()) ?? (await getStoredPushToken());
+          const deviceId = await getOrCreatePushDeviceId();
           await logoutCurrentSession({
             deviceToken,
+            deviceId,
+            appId: APP_ID,
           });
         } else if (currentToken) {
           apiClient.setToken(currentToken);
@@ -83,6 +131,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(null);
         setToken(null);
         apiClient.setToken(null);
+        await clearNativeOverlayAuth();
+        await clearStoredPushToken();
         await clearStoredAuth();
       }
     })();
@@ -92,7 +142,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
 
     async function restoreSession(): Promise<void> {
-      const storedToken = await getStoredAuthToken();
+      const [storedToken, storedUserJson] = await Promise.all([
+        getStoredAuthToken(),
+        getStoredAuthUser(),
+      ]);
+      const storedUser = parseStoredMobileUser(storedUserJson);
 
       if (cancelled) return;
 
@@ -110,18 +164,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (freshUser && (freshUser.role === 'vendor' || freshUser.role === 'delivery')) {
           setToken(storedToken);
           setUser(freshUser);
+          await saveNativeOverlayAuth(storedToken);
           await setStoredAuthUser(JSON.stringify(freshUser));
-          if (Platform.OS === 'android') {
+          if (Platform.OS !== 'web') {
             registerPushTokenIfAvailable(freshUser.role).catch(logPushRegistrationError);
           }
         } else {
           void clearStoredAuth();
           apiClient.setToken(null);
         }
-      } catch {
+      } catch (error) {
         if (cancelled) return;
-        void clearStoredAuth();
-        apiClient.setToken(null);
+
+        if (shouldClearStoredSession(error) || !storedUser) {
+          await clearStoredAuth();
+          apiClient.setToken(null);
+        } else {
+          setToken(storedToken);
+          setUser(storedUser);
+          await saveNativeOverlayAuth(storedToken);
+        }
       } finally {
         if (!cancelled) {
           setIsRestoringSession(false);
@@ -163,13 +225,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(resolvedUser);
     setToken(result.token);
     apiClient.setToken(result.token);
+    await saveNativeOverlayAuth(result.token);
 
     await Promise.all([
       setStoredAuthToken(result.token),
       setStoredAuthUser(JSON.stringify(resolvedUser)),
     ]);
 
-    if (Platform.OS === 'android') {
+    if (Platform.OS !== 'web') {
       registerPushTokenIfAvailable(resolvedUser.role).catch(logPushRegistrationError);
     }
   };

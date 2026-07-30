@@ -1,8 +1,15 @@
 export type StockFilter = '' | 'in_stock' | 'out_of_stock';
-export type BelowMinimumOrderMode = 'charge_delivery' | 'block_order';
-export type ManualOfficePaymentMethod = 'cash' | 'office_wallet';
-export type ManualOfficeRecordedPaymentMethod = ManualOfficePaymentMethod | 'pending';
+export type BelowMinimumOrderMode = 'charge_delivery' | 'block_order' | 'free_delivery';
+export type ManualOfficePaymentMethod = 'cash' | 'pending' | 'office_wallet';
+export type ManualOfficeRecordedPaymentMethod = ManualOfficePaymentMethod;
 export type QuickRequestPaymentMethod = 'cod' | 'office_wallet' | 'wallet';
+export type StoreHoursDayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+
+export type StoreHours = Record<StoreHoursDayKey, {
+  is_open: boolean;
+  opens_at: string;
+  closes_at: string;
+}>;
 
 export type OrderStatus =
   | 'placed'
@@ -29,6 +36,8 @@ export interface Building {
   floors_count?: number;
   menu_items_count?: number;
   orders_count?: number;
+  is_quick_request_vendor?: boolean;
+  is_print_vendor?: boolean;
 }
 
 export interface CatalogProduct {
@@ -48,13 +57,25 @@ export interface MenuItem {
   vendor_id?: number;
   predefined_product_id?: number | null;
   title: string;
+  mrp?: number | null;
   price: number;
   is_available: boolean;
   photo_url: string | null;
   product_name: string | null;
   category?: string | null;
+  subcategory?: string | null;
   description?: string | null;
   building_name?: string | null;
+  variants: MenuItemVariant[];
+}
+
+export interface MenuItemVariant {
+  id: number;
+  product_variant_id: number | null;
+  name: string;
+  mrp: number | null;
+  price: number;
+  is_available: boolean;
 }
 
 export interface VendorOrderItem {
@@ -213,6 +234,40 @@ export interface AssignedDeliveryPartner {
   mobile: string | null;
 }
 
+export interface PrintOrderFile {
+  id: number;
+  original_name: string;
+  mime_type: string | null;
+  size_bytes: number;
+  page_count: number;
+  print_mode: string | null;
+  print_mode_label: string | null;
+  copies: number;
+  paper_size: string | null;
+  orientation: string | null;
+  double_sided: boolean;
+  price_per_page: number;
+  line_total: number;
+  download_url: string | null;
+  share_url: string | null;
+}
+
+export interface PrintOrderDetails {
+  print_mode: string | null;
+  copies: number;
+  copies_summary: string | null;
+  paper_size: string | null;
+  double_sided: boolean;
+  status_note: string | null;
+  file_count: number;
+  bw_price: number;
+  color_price: number;
+  legal_price: number;
+  selected_price: number;
+  estimated_total: number;
+  files: PrintOrderFile[];
+}
+
 export interface VendorOrder {
   id: number;
   order_no: string;
@@ -226,8 +281,10 @@ export interface VendorOrder {
   order_channel?: string | null;
   ordered_by_name?: string | null;
   quick_request?: QuickRequestDetails | null;
+  print_order?: PrintOrderDetails | null;
   placed_at: string | null;
   building_name: string | null;
+  wing_name: string | null;
   office_no: string | null;
   customer_name: string | null;
   customer_mobile: string | null;
@@ -263,17 +320,38 @@ export interface VendorProfile {
   role: string;
   is_active: boolean;
   store_open: boolean;
+  store_hours_enabled: boolean;
+  store_hours: StoreHours;
+  store_available_now: boolean;
   delivery_charge: number;
+  estimated_waiting_time_minutes: number | null;
   below_minimum_order_mode: BelowMinimumOrderMode;
   minimum_order_value: number;
   quick_request_tea_price: number;
   quick_request_coffee_price: number;
+  can_manage_quick_request_pricing: boolean;
+  vendor_category: string | null;
+  print_bw_price: number;
+  print_color_price: number;
+  print_legal_price: number;
+  can_manage_print_pricing: boolean;
   office_wallet_credit_enabled: boolean;
   assigned_buildings: Building[];
   active_order_count: number;
 }
 
 export type VendorWalletTargetType = 'user' | 'office';
+
+export interface VendorOfficeWalletLookupItem {
+  office_id: number;
+  office_name: string;
+  building_id: number | null;
+  building_name: string | null;
+  label: string;
+  owner_name: string | null;
+  owner_mobile: string | null;
+  balance: number;
+}
 
 export interface VendorWalletTopUpReceipt {
   message: string;

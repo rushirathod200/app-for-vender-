@@ -1,6 +1,6 @@
 import { API_ENDPOINTS } from '../config/api';
 import { DeliveryOrder, DeliveryOrderItem, DeliveryProfile } from '../types/delivery';
-import { Building, ManualOfficeDirectoryItem, ManualOfficeFloorOption, ManualOfficeOrderReceipt, ManualOfficePickerBuilding, QuickRequestDetails, QuickRequestPaymentMethod } from '../types/vendor';
+import { Building, ManualOfficeDirectoryItem, ManualOfficeFloorOption, ManualOfficeOrderReceipt, ManualOfficePaymentMethod, ManualOfficePickerBuilding, QuickRequestDetails, QuickRequestPaymentMethod } from '../types/vendor';
 import { OrderStatus } from '../types/vendor';
 import {
   asArray,
@@ -309,13 +309,13 @@ function normalizeDeliveryOrder(entry: unknown): DeliveryOrder | null {
   const customer = isRecord(entry.customer) ? entry.customer : null;
   const quickRequest = normalizeQuickRequest(entry.quick_request);
   const allowedTransitions = asArray(entry.allowed_transitions)
-    .map((status) => toStringValue(status, '') as OrderStatus)
-    .filter((status): status is OrderStatus => Boolean(status));
+    .map((status) => normalizeDeliveryOrderStatus(toStringValue(status, '')))
+    .filter((status): status is OrderStatus => status !== null);
 
   return {
     id,
     order_no: toStringValue(entry.order_no, `#${id}`),
-    status: toStringValue(entry.status, 'preparing') as OrderStatus,
+    status: normalizeDeliveryOrderStatus(toStringValue(entry.status, 'pending')) ?? 'placed',
     subtotal: toNumberValue(entry.subtotal, 0),
     delivery_fee: toNumberValue(entry.delivery_fee, 0),
     total: toNumberValue(entry.total, 0),
@@ -340,6 +340,52 @@ function normalizeDeliveryOrder(entry: unknown): DeliveryOrder | null {
       .map(normalizeDeliveryOrderItem)
       .filter((item): item is DeliveryOrderItem => !!item),
   };
+}
+
+function normalizeDeliveryOrderStatus(status: string): OrderStatus | null {
+  switch (status) {
+    case 'pending':
+    case 'placed':
+      return 'placed';
+    case 'accepted':
+      return 'accepted';
+    case 'completed':
+    case 'delivered':
+      return 'delivered';
+    case 'rejected':
+    case 'cancelled':
+      return 'cancelled';
+    case 'preparing':
+      return 'preparing';
+    case 'out_for_delivery':
+      return 'out_for_delivery';
+    default:
+      return null;
+  }
+}
+
+function apiDeliveryOrderStatus(status: OrderStatus): 'accepted' | 'completed' | 'rejected' {
+  if (status === 'cancelled') {
+    return 'rejected';
+  }
+
+  if (status === 'delivered' || status === 'preparing' || status === 'out_for_delivery') {
+    return 'completed';
+  }
+
+  return 'accepted';
+}
+
+function apiDeliveryOrderFilterStatus(status: OrderStatus | ''): 'pending' | 'accepted' | 'completed' | 'rejected' | '' {
+  if (!status) {
+    return '';
+  }
+
+  if (status === 'placed') {
+    return 'pending';
+  }
+
+  return apiDeliveryOrderStatus(status);
 }
 
 export async function fetchDeliveryProfile(): Promise<DeliveryProfile | null> {
@@ -410,7 +456,7 @@ export async function createDeliveryManualOfficeOrder(input: {
   office_id: number;
   tea_qty: number;
   coffee_qty: number;
-  payment_method: 'cash' | 'office_wallet';
+  payment_method: ManualOfficePaymentMethod;
   notes?: string;
 }): Promise<ManualOfficeOrderReceipt | null> {
   const payload = await apiClient.post<unknown>(API_ENDPOINTS.deliveryManualOrders, input);
@@ -421,7 +467,7 @@ export async function fetchDeliveryOrders(params?: {
   status?: OrderStatus | '';
 }): Promise<DeliveryOrder[]> {
   const payload = await apiClient.get<unknown>(API_ENDPOINTS.deliveryOrders, {
-    status: params?.status ?? '',
+    status: apiDeliveryOrderFilterStatus(params?.status ?? ''),
   });
 
   return extractCollection(payload)
@@ -435,7 +481,7 @@ export async function updateDeliveryOrderStatus(
   cancelReason?: string,
 ): Promise<DeliveryOrder | null> {
   const payload = await apiClient.patch<unknown>(`${API_ENDPOINTS.deliveryOrders}/${orderId}/status`, {
-    status,
+    status: apiDeliveryOrderStatus(status),
     ...(cancelReason ? { cancel_reason: cancelReason } : {}),
   });
 

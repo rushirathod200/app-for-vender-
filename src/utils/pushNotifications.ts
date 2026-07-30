@@ -15,6 +15,14 @@ interface PushTokenSubscription {
   remove: () => void;
 }
 
+function platformName(): 'android' | 'ios' | null {
+  if (Platform.OS === 'android' || Platform.OS === 'ios') {
+    return Platform.OS;
+  }
+
+  return null;
+}
+
 async function resolveAndroidPushToken(): Promise<string | null> {
   try {
     const tokenData = await Notifications.getDevicePushTokenAsync();
@@ -24,23 +32,44 @@ async function resolveAndroidPushToken(): Promise<string | null> {
   }
 }
 
-export async function getCurrentPushTokenAsync(): Promise<string | null> {
-  if (Platform.OS !== 'android') {
+async function resolveIosPushToken(): Promise<string | null> {
+  try {
+    const projectId = process.env.EXPO_PUBLIC_EAS_PROJECT_ID?.trim();
+    const tokenData = projectId
+      ? await Notifications.getExpoPushTokenAsync({ projectId })
+      : await Notifications.getExpoPushTokenAsync();
+
+    return typeof tokenData.data === 'string' && tokenData.data.length > 0 ? tokenData.data : null;
+  } catch {
     return null;
   }
+}
 
-  return resolveAndroidPushToken();
+export async function getCurrentPushTokenAsync(): Promise<string | null> {
+  if (Platform.OS === 'android') {
+    return resolveAndroidPushToken();
+  }
+
+  if (Platform.OS === 'ios') {
+    return resolveIosPushToken();
+  }
+
+  return null;
 }
 
 export async function registerForPushNotificationsAsync(): Promise<string | null> {
-  if (Platform.OS !== 'android') {
+  const platform = platformName();
+
+  if (!platform) {
     return null;
   }
 
-  await Notifications.setNotificationChannelAsync('orders', {
-    name: 'Orders',
-    importance: Notifications.AndroidImportance.HIGH,
-  });
+  if (platform === 'android') {
+    await Notifications.setNotificationChannelAsync('orders', {
+      name: 'Orders',
+      importance: Notifications.AndroidImportance.HIGH,
+    });
+  }
 
   const { status: existingStatus } = await Notifications.getPermissionsAsync();
 
@@ -52,7 +81,7 @@ export async function registerForPushNotificationsAsync(): Promise<string | null
     }
   }
 
-  return resolveAndroidPushToken();
+  return platform === 'android' ? resolveAndroidPushToken() : resolveIosPushToken();
 }
 
 export function addPushTokenRefreshListener(
