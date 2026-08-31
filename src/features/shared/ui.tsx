@@ -7,6 +7,7 @@ import {
   Text,
   TextInput,
   TextInputProps,
+  TextStyle,
   useWindowDimensions,
   View,
   ViewStyle,
@@ -43,9 +44,20 @@ interface ActionButtonProps {
   onPress: () => void;
   icon?: keyof typeof Ionicons.glyphMap;
   style?: StyleProp<ViewStyle>;
+  labelStyle?: StyleProp<TextStyle>;
+  labelNumberOfLines?: number;
 }
 
-export function ActionButton({ label, tone = 'vendor', disabled, onPress, icon, style }: ActionButtonProps) {
+export function ActionButton({
+  label,
+  tone = 'vendor',
+  disabled,
+  onPress,
+  icon,
+  style,
+  labelStyle,
+  labelNumberOfLines = 1,
+}: ActionButtonProps) {
   const colors = toneMap[tone];
 
   return (
@@ -61,7 +73,12 @@ export function ActionButton({ label, tone = 'vendor', disabled, onPress, icon, 
       ]}
     >
       {icon ? <Ionicons name={icon} size={16} color={colors.text} style={styles.actionIcon} /> : null}
-      <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.86} style={[styles.actionButtonText, { color: colors.text }]}>
+      <Text
+        numberOfLines={labelNumberOfLines}
+        adjustsFontSizeToFit={labelNumberOfLines === 1}
+        minimumFontScale={0.86}
+        style={[styles.actionButtonText, { color: colors.text }, labelStyle]}
+      >
         {label}
       </Text>
     </Pressable>
@@ -136,6 +153,8 @@ export function QuantityStepper({
   const canDecrement = value > min;
   const [draftValue, setDraftValue] = React.useState(String(value));
   const [isEditing, setIsEditing] = React.useState(false);
+  const displayedValue = isEditing ? draftValue : String(value);
+  const quantityFontSize = displayedValue.length >= 4 ? 14 : displayedValue.length === 3 ? 16 : 18;
 
   React.useEffect(() => {
     if (!isEditing) {
@@ -187,7 +206,7 @@ export function QuantityStepper({
 
         <View style={styles.quantityStepperValueWrap}>
           <TextInput
-            value={isEditing ? draftValue : String(value)}
+            value={displayedValue}
             onFocus={() => {
               setIsEditing(true);
               setDraftValue(String(value));
@@ -197,7 +216,7 @@ export function QuantityStepper({
             keyboardType="number-pad"
             selectTextOnFocus
             maxLength={4}
-            style={styles.quantityStepperInput}
+            style={[styles.quantityStepperInput, { fontSize: quantityFontSize }]}
           />
         </View>
 
@@ -285,6 +304,7 @@ const vendorTabMeta: Record<VendorTabKey, { label: string; icon: keyof typeof Ma
   wallet: { label: 'Wallet', icon: 'wallet-plus-outline' },
   manual: { label: 'Manual', icon: 'notebook-plus-outline' },
   reports: { label: 'Reports', icon: 'file-chart-outline' },
+  referral: { label: 'Refer', icon: 'account-multiple-outline' },
   profile: { label: 'Profile', icon: 'account-outline' },
 };
 
@@ -428,7 +448,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   quantityStepperButton: {
-    width: 52,
+    width: 44,
     alignSelf: 'stretch',
     alignItems: 'center',
     justifyContent: 'center',
@@ -447,16 +467,20 @@ const styles = StyleSheet.create({
   },
   quantityStepperValueWrap: {
     flex: 1,
+    minWidth: 0,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 10,
+    paddingHorizontal: 2,
   },
   quantityStepperInput: {
-    width: '100%',
+    alignSelf: 'stretch',
+    minWidth: 0,
     color: tokens.colors.text,
-    fontSize: 18,
     fontWeight: '800',
     textAlign: 'center',
+    textAlignVertical: 'center',
+    includeFontPadding: false,
+    paddingHorizontal: 0,
     paddingVertical: 0,
   },
   statusBadge: {

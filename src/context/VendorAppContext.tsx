@@ -1,14 +1,17 @@
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
+  completeVendorQuickRequest,
   createDeliveryPartner,
   fetchAssignedBuildings,
   fetchDeliveryPartners,
+  fetchVendorOrderDashboardData,
+  fetchVendorOrdersPage,
   fetchVendorMenu,
-  fetchVendorOrders,
   fetchVendorProfile,
   updateDeliveryPartner,
   updateDeliveryPartnerStatus,
+  updateBuildingDeliveryCharge,
   updateMenuItemAvailability,
   updateVendorOrderStatus,
   updateVendorProfile,
@@ -16,6 +19,7 @@ import {
 import {
   fetchVendorNotificationIndex,
   fetchVendorUnreadNotificationCount,
+  markAllVendorNotificationsRead,
   markVendorNotificationRead,
 } from '../api/notificationsApi';
 import { ApiError } from '../api/httpClient';
@@ -26,20 +30,27 @@ import { AppNotification } from '../types/notification';
 import {
   BelowMinimumOrderMode,
   Building,
+  BuildingOrderPolicyInput,
   MenuItem,
   OrderStatus,
   OrderTabCounts,
   OrderTabKey,
+  QuickRequestPaymentMethod,
   StoreHours,
   VendorDeliveryPartner,
   VendorOrder,
   VendorProfile,
   VendorOrderSummary,
 } from '../types/vendor';
-import { groupVendorOrderStatus, isSameCalendarDay, sortVendorOrders } from '../utils/vendor';
+import { groupVendorOrderStatus, sortVendorOrders } from '../utils/vendor';
 
 interface RefreshOptions {
   force?: boolean;
+}
+
+interface OrderPageState {
+  currentPage: number;
+  lastPage: number;
 }
 
 interface VendorAppContextValue {
@@ -53,6 +64,8 @@ interface VendorAppContextValue {
   ordersByTab: Record<OrderTabKey, VendorOrder[]>;
   orderCounts: OrderTabCounts;
   dashboardOrderSummary: VendorOrderSummary | null;
+  ordersHasMore: Record<OrderTabKey, boolean>;
+  ordersLoadingMoreTab: OrderTabKey | null;
   notifications: AppNotification[];
   unreadNotificationCount: number;
   deliveryPartners: VendorDeliveryPartner[];
@@ -61,15 +74,20 @@ interface VendorAppContextValue {
   ordersLoading: boolean;
   notificationsLoading: boolean;
   deliveryPartnersLoading: boolean;
+  storeStatusUpdating: boolean;
+  updatingProductIds: number[];
   connectionUnavailable: boolean;
   connectionUnavailableReason: string | null;
   error: string | null;
   refreshAll: (options?: RefreshOptions) => Promise<void>;
-  refreshProducts: (options?: RefreshOptions) => Promise<void>;
-  refreshOrders: (options?: RefreshOptions) => Promise<void>;
+  refreshProducts: (options?: RefreshOptions) => Promise<boolean>;
+  refreshOrders: (options?: RefreshOptions) => Promise<boolean>;
+  loadMoreOrders: (tab: OrderTabKey) => Promise<void>;
   refreshNotifications: (options?: RefreshOptions) => Promise<void>;
   markNotificationRead: (notificationId: string) => Promise<void>;
+  markAllNotificationsRead: () => Promise<void>;
   refreshDeliveryPartners: (options?: RefreshOptions) => Promise<void>;
+  saveBuildingDeliveryCharge: (buildingId: number, input: BuildingOrderPolicyInput) => Promise<void>;
   saveProfile: (input: {
     name: string;
     email: string;
@@ -92,6 +110,10 @@ interface VendorAppContextValue {
   toggleStoreOpen: () => Promise<void>;
   toggleProductActive: (item: MenuItem) => Promise<void>;
   updateOrderStatus: (orderId: number, status: OrderStatus, cancelReason?: string) => Promise<void>;
+  completeQuickRequest: (
+    orderId: number,
+    input: { tea_qty: number; coffee_qty: number; payment_method: QuickRequestPaymentMethod },
+  ) => Promise<void>;
   upsertDeliveryPartner: (input: {
     id?: number;
     name: string;
@@ -99,6 +121,7 @@ interface VendorAppContextValue {
     mobile: string;
     password?: string;
     is_active?: boolean;
+    can_cancel_orders: boolean;
   }) => Promise<void>;
   toggleDeliveryPartnerStatus: (partnerId: number) => Promise<void>;
 }
@@ -109,6 +132,7 @@ const EMPTY_ORDER_COUNTS: OrderTabCounts = {
   completed: 0,
   cancelled: 0,
 };
+const ORDER_PAGE_SIZE = 10;
 
 const CACHE_TTL_MS = {
   all: 30_000,
@@ -118,11 +142,19 @@ const CACHE_TTL_MS = {
   products: 60_000,
 } as const;
 
-function buildMenuMap(buildings: Building[], menuLists: MenuItem[][]): Record<number, MenuItem[]> {
-  return buildings.reduce<Record<number, MenuItem[]>>((result, building, index) => {
-    result[building.id] = menuLists[index] ?? [];
+function buildSharedMenuMap(buildings: Building[], menuItems: MenuItem[]): Record<number, MenuItem[]> {
+  return buildings.reduce<Record<number, MenuItem[]>>((result, building) => {
+    result[building.id] = menuItems;
     return result;
   }, {});
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function isFresh(loaded: boolean, timestamp: number, ttlMs: number, force?: boolean): boolean {
+  return !force && loaded && (Date.now() - timestamp) < ttlMs;
 }
 
 function createEmptyOrdersByTab(): Record<OrderTabKey, VendorOrder[]> {
@@ -133,29 +165,33 @@ function createEmptyOrdersByTab(): Record<OrderTabKey, VendorOrder[]> {
   };
 }
 
+function createInitialOrderPages(): Record<OrderTabKey, OrderPageState> {
+  return {
+    pending: { currentPage: 0, lastPage: 0 },
+    completed: { currentPage: 0, lastPage: 0 },
+    cancelled: { currentPage: 0, lastPage: 0 },
+  };
+}
+
+async function fetchInitialOrderWorkspace() {
+  const [dashboard, pending, completed, cancelled] = await Promise.all([
+    fetchVendorOrderDashboardData(),
+    fetchVendorOrdersPage({ bucket: 'pending', page: 1, perPage: ORDER_PAGE_SIZE }),
+    fetchVendorOrdersPage({ bucket: 'completed', page: 1, perPage: ORDER_PAGE_SIZE }),
+    fetchVendorOrdersPage({ bucket: 'cancelled', page: 1, perPage: ORDER_PAGE_SIZE }),
+  ]);
+
+  return {
+    dashboard,
+    pages: { pending, completed, cancelled },
+  };
+}
+
 function buildOrdersByTab(orders: VendorOrder[]): Record<OrderTabKey, VendorOrder[]> {
   return {
     pending: orders.filter((order) => groupVendorOrderStatus(order.status) === 'pending'),
     completed: orders.filter((order) => groupVendorOrderStatus(order.status) === 'completed'),
     cancelled: orders.filter((order) => groupVendorOrderStatus(order.status) === 'cancelled'),
-  };
-}
-
-function buildOrderCounts(ordersByTab: Record<OrderTabKey, VendorOrder[]>): OrderTabCounts {
-  return {
-    pending: ordersByTab.pending.length,
-    completed: ordersByTab.completed.length,
-    cancelled: ordersByTab.cancelled.length,
-  };
-}
-
-function buildVendorOrderSummary(orders: VendorOrder[]): VendorOrderSummary {
-  const completedOrders = orders.filter((order) => order.status === 'delivered');
-
-  return {
-    today_orders: orders.filter((order) => isSameCalendarDay(order.placed_at)).length,
-    total_sales: completedOrders.reduce((sum, order) => sum + order.total, 0),
-    recent_orders: orders.slice(0, 2),
   };
 }
 
@@ -169,6 +205,8 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
   const [ordersByTab, setOrdersByTab] = useState<Record<OrderTabKey, VendorOrder[]>>(createEmptyOrdersByTab);
   const [orderCounts, setOrderCounts] = useState<OrderTabCounts>(EMPTY_ORDER_COUNTS);
   const [dashboardOrderSummary, setDashboardOrderSummary] = useState<VendorOrderSummary | null>(null);
+  const [orderPages, setOrderPages] = useState<Record<OrderTabKey, OrderPageState>>(createInitialOrderPages);
+  const [ordersLoadingMoreTab, setOrdersLoadingMoreTab] = useState<OrderTabKey | null>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [deliveryPartners, setDeliveryPartners] = useState<VendorDeliveryPartner[]>([]);
@@ -177,6 +215,8 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [deliveryPartnersLoading, setDeliveryPartnersLoading] = useState(false);
+  const [storeStatusUpdating, setStoreStatusUpdating] = useState(false);
+  const [updatingProductIds, setUpdatingProductIds] = useState<number[]>([]);
   const [connectionUnavailable, setConnectionUnavailable] = useState(false);
   const [connectionUnavailableReason, setConnectionUnavailableReason] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -189,19 +229,22 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
   });
   const inFlightRef = useRef({
     all: null as Promise<void> | null,
-    orders: null as Promise<void> | null,
+    orders: null as Promise<boolean> | null,
     notifications: null as Promise<void> | null,
     deliveryPartners: null as Promise<void> | null,
-    productsByBuilding: {} as Record<number, Promise<void> | null>,
+    productsByBuilding: {} as Record<number, Promise<boolean> | null>,
+  });
+  const storeToggleInFlightRef = useRef<Promise<void> | null>(null);
+  const productToggleInFlightRef = useRef<Record<number, Promise<void>>>({});
+  const orderPageInFlightRef = useRef<Record<OrderTabKey, Promise<void> | null>>({
+    pending: null,
+    completed: null,
+    cancelled: null,
   });
 
   useAutoClearValue(error, () => setError(null));
 
-  function isFresh(loaded: boolean, timestamp: number, ttlMs: number, force?: boolean): boolean {
-    return !force && loaded && (Date.now() - timestamp) < ttlMs;
-  }
-
-  function touchCache(keys: Array<'all' | 'orders' | 'notifications' | 'deliveryPartners'>): void {
+  const touchCache = useCallback((keys: Array<'all' | 'orders' | 'notifications' | 'deliveryPartners'>): void => {
     const now = Date.now();
     keys.forEach((key) => {
       cacheRef.current[key] = {
@@ -209,7 +252,7 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
         timestamp: now,
       };
     });
-  }
+  }, []);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -220,9 +263,13 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       setOrdersByTab(createEmptyOrdersByTab());
       setOrderCounts(EMPTY_ORDER_COUNTS);
       setDashboardOrderSummary(null);
+      setOrderPages(createInitialOrderPages());
+      setOrdersLoadingMoreTab(null);
       setNotifications([]);
       setUnreadNotificationCount(0);
       setDeliveryPartners([]);
+      setStoreStatusUpdating(false);
+      setUpdatingProductIds([]);
       setConnectionUnavailable(false);
       setConnectionUnavailableReason(null);
       setError(null);
@@ -241,11 +288,14 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
         deliveryPartners: null,
         productsByBuilding: {},
       };
+      storeToggleInFlightRef.current = null;
+      productToggleInFlightRef.current = {};
+      orderPageInFlightRef.current = { pending: null, completed: null, cancelled: null };
       return;
     }
   }, [isAuthenticated]);
 
-  const refreshAll = async (options?: RefreshOptions): Promise<void> => {
+  const refreshAll = useCallback(async (options?: RefreshOptions): Promise<void> => {
     if (isFresh(cacheRef.current.all.loaded, cacheRef.current.all.timestamp, CACHE_TTL_MS.all, options?.force)) {
       return;
     }
@@ -259,50 +309,18 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       setError(null);
 
       try {
-        const [fetchedProfile, fetchedBuildings, fetchedOrders, fetchedPartners, notificationIndex] = await Promise.all([
+        // Profile and building access are required to establish the vendor workspace.
+        // The remaining sections are independent so one temporary endpoint failure
+        // must not make the entire app unusable.
+        const [fetchedProfile, fetchedBuildings] = await Promise.all([
           fetchVendorProfile(),
           fetchAssignedBuildings(),
-          fetchVendorOrders({}),
-          fetchDeliveryPartners(),
-          fetchVendorNotificationIndex(),
         ]);
-        const sortedOrders = sortVendorOrders(fetchedOrders);
-        const nextOrdersByTab = buildOrdersByTab(sortedOrders);
 
         setProfile(fetchedProfile);
         setBuildings(fetchedBuildings);
-        setDeliveryPartners(fetchedPartners);
-        setOrdersByTab(nextOrdersByTab);
-        setOrderCounts(buildOrderCounts(nextOrdersByTab));
-        setDashboardOrderSummary(buildVendorOrderSummary(sortedOrders));
-        setNotifications(notificationIndex.notifications);
-        setUnreadNotificationCount(
-          notificationIndex.unreadCount ?? (await fetchVendorUnreadNotificationCount()),
-        );
         setConnectionUnavailable(false);
         setConnectionUnavailableReason(null);
-        touchCache(['orders']);
-
-        if (fetchedBuildings.length === 0) {
-          setSelectedBuildingIdState(null);
-          setProductsByBuilding({});
-          touchCache(['all', 'orders', 'notifications', 'deliveryPartners']);
-          return;
-        }
-
-        const menuLists = await Promise.all(
-          fetchedBuildings.map((building) => fetchVendorMenu({ buildingId: building.id })),
-        );
-
-        setProductsByBuilding(buildMenuMap(fetchedBuildings, menuLists));
-        const now = Date.now();
-        cacheRef.current.productsByBuilding = fetchedBuildings.reduce<Record<number, { loaded: boolean; timestamp: number }>>(
-          (result, building) => {
-            result[building.id] = { loaded: true, timestamp: now };
-            return result;
-          },
-          {},
-        );
         setSelectedBuildingIdState((current) => {
           if (current && fetchedBuildings.some((building) => building.id === current)) {
             return current;
@@ -310,15 +328,82 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
 
           return fetchedBuildings[0]?.id ?? null;
         });
-        touchCache(['all', 'orders', 'notifications', 'deliveryPartners']);
+
+        const [ordersResult, partnersResult, notificationsResult, menuResult] = await Promise.allSettled([
+          fetchInitialOrderWorkspace(),
+          fetchDeliveryPartners(),
+          (async () => {
+            const notificationIndex = await fetchVendorNotificationIndex();
+            const unreadCount = notificationIndex.unreadCount ?? (await fetchVendorUnreadNotificationCount());
+            return { notificationIndex, unreadCount };
+          })(),
+          fetchedBuildings.length > 0
+            ? fetchVendorMenu({ buildingId: fetchedBuildings[0].id })
+            : Promise.resolve([] as MenuItem[]),
+        ]);
+
+        const partialErrors: unknown[] = [];
+
+        if (ordersResult.status === 'fulfilled') {
+          const { dashboard, pages } = ordersResult.value;
+          setOrdersByTab({
+            pending: sortVendorOrders(pages.pending.orders),
+            completed: sortVendorOrders(pages.completed.orders),
+            cancelled: sortVendorOrders(pages.cancelled.orders),
+          });
+          setOrderCounts(dashboard.counts);
+          setDashboardOrderSummary(dashboard.summary);
+          setOrderPages({
+            pending: { currentPage: pages.pending.currentPage, lastPage: pages.pending.lastPage },
+            completed: { currentPage: pages.completed.currentPage, lastPage: pages.completed.lastPage },
+            cancelled: { currentPage: pages.cancelled.currentPage, lastPage: pages.cancelled.lastPage },
+          });
+          touchCache(['orders']);
+        } else {
+          partialErrors.push(ordersResult.reason);
+        }
+
+        if (partnersResult.status === 'fulfilled') {
+          setDeliveryPartners(partnersResult.value);
+          touchCache(['deliveryPartners']);
+        } else {
+          partialErrors.push(partnersResult.reason);
+        }
+
+        if (notificationsResult.status === 'fulfilled') {
+          setNotifications(notificationsResult.value.notificationIndex.notifications);
+          setUnreadNotificationCount(notificationsResult.value.unreadCount);
+          touchCache(['notifications']);
+        } else {
+          partialErrors.push(notificationsResult.reason);
+        }
+
+        if (menuResult.status === 'fulfilled') {
+          setProductsByBuilding(buildSharedMenuMap(fetchedBuildings, menuResult.value));
+          const now = Date.now();
+          cacheRef.current.productsByBuilding = fetchedBuildings.reduce<Record<number, { loaded: boolean; timestamp: number }>>(
+            (result, building) => {
+              result[building.id] = { loaded: true, timestamp: now };
+              return result;
+            },
+            {},
+          );
+        } else {
+          partialErrors.push(menuResult.reason);
+        }
+
+        if (partialErrors.length === 0) {
+          touchCache(['all']);
+        } else {
+          setError(errorMessage(partialErrors[0], 'Some vendor data could not be refreshed. Please try again.'));
+        }
       } catch (loadError) {
         if (loadError instanceof ApiError && loadError.status === 0) {
           setConnectionUnavailable(true);
           setConnectionUnavailableReason(loadError.message);
           setError(null);
         } else {
-          const message = loadError instanceof Error ? loadError.message : 'Could not load vendor data.';
-          setError(message);
+          setError(errorMessage(loadError, 'Could not load vendor data.'));
         }
       } finally {
         setIsLoading(false);
@@ -332,22 +417,29 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
         inFlightRef.current.all = null;
       }
     });
-  };
+  }, [touchCache]);
 
-  const refreshProducts = async (options?: RefreshOptions): Promise<void> => {
+  const refreshProducts = useCallback(async (options?: RefreshOptions): Promise<boolean> => {
     if (!selectedBuildingId) {
-      return;
+      return true;
     }
 
-    const currentCache = cacheRef.current.productsByBuilding[selectedBuildingId];
+    const buildingId = selectedBuildingId;
+    const activeRequest = inFlightRef.current.productsByBuilding[buildingId];
+
+    if (activeRequest) {
+      const activeResult = await activeRequest;
+
+      if (!options?.force) {
+        return activeResult;
+      }
+    }
+
+    const currentCache = cacheRef.current.productsByBuilding[buildingId];
     if (
       isFresh(currentCache?.loaded ?? false, currentCache?.timestamp ?? 0, CACHE_TTL_MS.products, options?.force)
     ) {
-      return;
-    }
-
-    if (inFlightRef.current.productsByBuilding[selectedBuildingId]) {
-      return inFlightRef.current.productsByBuilding[selectedBuildingId] as Promise<void>;
+      return true;
     }
 
     const request = (async () => {
@@ -355,35 +447,41 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       setError(null);
 
       try {
-        const items = await fetchVendorMenu({ buildingId: selectedBuildingId });
-        setProductsByBuilding((current) => ({
-          ...current,
-          [selectedBuildingId]: items,
-        }));
-        cacheRef.current.productsByBuilding[selectedBuildingId] = {
-          loaded: true,
-          timestamp: Date.now(),
-        };
+        const items = await fetchVendorMenu({
+          buildingId,
+          cacheBust: options?.force ? Date.now() : undefined,
+        });
+        setProductsByBuilding(buildSharedMenuMap(buildings, items));
+        const now = Date.now();
+        cacheRef.current.productsByBuilding = buildings.reduce<Record<number, { loaded: boolean; timestamp: number }>>(
+          (result, building) => {
+            result[building.id] = { loaded: true, timestamp: now };
+            return result;
+          },
+          {},
+        );
+        return true;
       } catch (loadError) {
         const message = loadError instanceof Error ? loadError.message : 'Could not load menu items.';
         setError(message);
+        return false;
       } finally {
         setProductsLoading(false);
       }
     })();
 
-    inFlightRef.current.productsByBuilding[selectedBuildingId] = request;
+    inFlightRef.current.productsByBuilding[buildingId] = request;
 
     return request.finally(() => {
-      if (inFlightRef.current.productsByBuilding[selectedBuildingId] === request) {
-        delete inFlightRef.current.productsByBuilding[selectedBuildingId];
+      if (inFlightRef.current.productsByBuilding[buildingId] === request) {
+        delete inFlightRef.current.productsByBuilding[buildingId];
       }
     });
-  };
+  }, [buildings, selectedBuildingId]);
 
-  const refreshOrders = async (options?: RefreshOptions): Promise<void> => {
+  const refreshOrders = useCallback(async (options?: RefreshOptions): Promise<boolean> => {
     if (isFresh(cacheRef.current.orders.loaded, cacheRef.current.orders.timestamp, CACHE_TTL_MS.orders, options?.force)) {
-      return;
+      return true;
     }
 
     if (inFlightRef.current.orders) {
@@ -395,15 +493,25 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       setError(null);
 
       try {
-        const items = sortVendorOrders(await fetchVendorOrders({}));
-        const nextOrdersByTab = buildOrdersByTab(items);
-        setOrdersByTab(nextOrdersByTab);
-        setOrderCounts(buildOrderCounts(nextOrdersByTab));
-        setDashboardOrderSummary(buildVendorOrderSummary(items));
+        const { dashboard, pages } = await fetchInitialOrderWorkspace();
+        setOrdersByTab({
+          pending: sortVendorOrders(pages.pending.orders),
+          completed: sortVendorOrders(pages.completed.orders),
+          cancelled: sortVendorOrders(pages.cancelled.orders),
+        });
+        setOrderCounts(dashboard.counts);
+        setDashboardOrderSummary(dashboard.summary);
+        setOrderPages({
+          pending: { currentPage: pages.pending.currentPage, lastPage: pages.pending.lastPage },
+          completed: { currentPage: pages.completed.currentPage, lastPage: pages.completed.lastPage },
+          cancelled: { currentPage: pages.cancelled.currentPage, lastPage: pages.cancelled.lastPage },
+        });
         touchCache(['orders']);
+        return true;
       } catch (loadError) {
         const message = loadError instanceof Error ? loadError.message : 'Could not load orders.';
         setError(message);
+        return false;
       } finally {
         setOrdersLoading(false);
       }
@@ -416,7 +524,58 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
         inFlightRef.current.orders = null;
       }
     });
-  };
+  }, [touchCache]);
+
+  const loadMoreOrders = useCallback(async (tab: OrderTabKey): Promise<void> => {
+    const activeRequest = orderPageInFlightRef.current[tab];
+    if (activeRequest) {
+      return activeRequest;
+    }
+
+    const currentPage = orderPages[tab];
+    if (currentPage.currentPage >= currentPage.lastPage) {
+      return;
+    }
+
+    const request = (async () => {
+      setOrdersLoadingMoreTab(tab);
+      setError(null);
+
+      try {
+        const nextPage = await fetchVendorOrdersPage({
+          bucket: tab,
+          page: currentPage.currentPage + 1,
+          perPage: ORDER_PAGE_SIZE,
+        });
+
+        setOrdersByTab((current) => {
+          const existingIds = new Set(current[tab].map((order) => order.id));
+          const appended = nextPage.orders.filter((order) => !existingIds.has(order.id));
+          return {
+            ...current,
+            [tab]: sortVendorOrders([...current[tab], ...appended]),
+          };
+        });
+        setOrderPages((current) => ({
+          ...current,
+          [tab]: { currentPage: nextPage.currentPage, lastPage: nextPage.lastPage },
+        }));
+        setOrderCounts((current) => ({ ...current, [tab]: nextPage.total }));
+      } catch (loadError) {
+        setError(errorMessage(loadError, 'Could not load more orders.'));
+      } finally {
+        setOrdersLoadingMoreTab((current) => (current === tab ? null : current));
+      }
+    })();
+
+    orderPageInFlightRef.current[tab] = request;
+
+    return request.finally(() => {
+      if (orderPageInFlightRef.current[tab] === request) {
+        orderPageInFlightRef.current[tab] = null;
+      }
+    });
+  }, [orderPages]);
 
   const refreshNotifications = async (options?: RefreshOptions): Promise<void> => {
     if (
@@ -497,6 +656,25 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const markAllNotificationsRead = async (): Promise<void> => {
+    if (unreadNotificationCount <= 0) {
+      return;
+    }
+
+    setNotifications((current) => current.map((notification) => ({ ...notification, is_read: true })));
+    setUnreadNotificationCount(0);
+
+    try {
+      await markAllVendorNotificationsRead();
+      touchCache(['all', 'notifications']);
+    } catch (updateError) {
+      await refreshNotifications({ force: true });
+      const message = updateError instanceof Error ? updateError.message : 'Could not update notifications.';
+      setError(message);
+      throw updateError;
+    }
+  };
+
   const refreshDeliveryPartners = async (options?: RefreshOptions): Promise<void> => {
     if (
       isFresh(
@@ -559,51 +737,125 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
   }): Promise<void> => {
     const updated = await updateVendorProfile(input);
     if (updated) {
-      setProfile(updated);
+      const synchronizeDefaultCharge = (building: Building): Building => {
+        const usesDefaultPolicy = building.uses_default_order_policy;
+        const effectiveMode = usesDefaultPolicy
+          ? updated.below_minimum_order_mode
+          : building.effective_below_minimum_order_mode;
+
+        return {
+          ...building,
+          default_delivery_charge: updated.delivery_charge,
+          default_below_minimum_order_mode: updated.below_minimum_order_mode,
+          default_minimum_order_value: updated.minimum_order_value,
+          effective_below_minimum_order_mode: effectiveMode,
+          effective_minimum_order_value: usesDefaultPolicy
+            ? effectiveMode === 'free_delivery' ? 0 : updated.minimum_order_value
+            : building.effective_minimum_order_value,
+          effective_delivery_charge: usesDefaultPolicy
+            ? effectiveMode === 'charge_delivery' ? updated.delivery_charge : 0
+            : building.effective_delivery_charge,
+          uses_default_delivery_charge: building.delivery_charge_override === null,
+        };
+      };
+
+      setBuildings((current) => current.map(synchronizeDefaultCharge));
+      setProfile({
+        ...updated,
+        assigned_buildings: buildings.length
+          ? buildings.map(synchronizeDefaultCharge)
+          : updated.assigned_buildings.map(synchronizeDefaultCharge),
+      });
       touchCache(['all']);
     }
   };
 
+  const saveBuildingDeliveryCharge = async (
+    buildingId: number,
+    input: BuildingOrderPolicyInput,
+  ): Promise<void> => {
+    setError(null);
+    const updated = await updateBuildingDeliveryCharge(buildingId, input);
+
+    if (!updated) {
+      throw new Error('Could not update the building delivery charge.');
+    }
+
+    setBuildings((current) => current.map((building) => (
+      building.id === buildingId ? updated : building
+    )));
+    setProfile((current) => current ? {
+      ...current,
+      assigned_buildings: current.assigned_buildings.map((building) => (
+        building.id === buildingId ? updated : building
+      )),
+    } : current);
+    touchCache(['all']);
+  };
+
   const toggleStoreOpen = async (): Promise<void> => {
+    if (storeToggleInFlightRef.current) {
+      return storeToggleInFlightRef.current;
+    }
+
     if (!profile) {
       return;
     }
 
-    const next = !profile.store_open;
-    const optimistic = { ...profile, store_open: next };
-    setProfile(optimistic);
+    const previousProfile = profile;
+    const next = !previousProfile.store_open;
+    setProfile({ ...previousProfile, store_open: next });
+    setStoreStatusUpdating(true);
 
-    try {
-      const quickRequestBuilding = profile.assigned_buildings.find((building) => building.is_quick_request_vendor);
+    const request = (async () => {
+      try {
+        const quickRequestBuilding = previousProfile.assigned_buildings.find(
+          (building) => building.is_quick_request_vendor,
+        );
 
-      await saveProfile({
-        name: profile.name ?? '',
-        email: profile.email ?? '',
-        mobile: profile.mobile,
-        store_open: next,
-        store_hours_enabled: profile.store_hours_enabled,
-        store_hours: profile.store_hours,
-        delivery_charge: profile.delivery_charge,
-        estimated_waiting_time_minutes: profile.estimated_waiting_time_minutes,
-        below_minimum_order_mode: profile.below_minimum_order_mode,
-        minimum_order_value: profile.minimum_order_value,
-        building_id: quickRequestBuilding?.id,
-        quick_request_tea_price: quickRequestBuilding ? profile.quick_request_tea_price : undefined,
-        quick_request_coffee_price: quickRequestBuilding ? profile.quick_request_coffee_price : undefined,
-        print_bw_price: profile.can_manage_print_pricing ? profile.print_bw_price : undefined,
-        print_color_price: profile.can_manage_print_pricing ? profile.print_color_price : undefined,
-        print_legal_price: profile.can_manage_print_pricing ? profile.print_legal_price : undefined,
-        office_wallet_credit_enabled: profile.office_wallet_credit_enabled,
-      });
-    } catch (toggleError) {
-      setProfile(profile);
-      const message = toggleError instanceof Error ? toggleError.message : 'Could not update store status.';
-      setError(message);
-      throw toggleError;
-    }
+        await saveProfile({
+          name: previousProfile.name ?? '',
+          email: previousProfile.email ?? '',
+          mobile: previousProfile.mobile,
+          store_open: next,
+          store_hours_enabled: previousProfile.store_hours_enabled,
+          store_hours: previousProfile.store_hours,
+          delivery_charge: previousProfile.delivery_charge,
+          estimated_waiting_time_minutes: previousProfile.estimated_waiting_time_minutes,
+          below_minimum_order_mode: previousProfile.below_minimum_order_mode,
+          minimum_order_value: previousProfile.minimum_order_value,
+          building_id: quickRequestBuilding?.id,
+          quick_request_tea_price: quickRequestBuilding ? previousProfile.quick_request_tea_price : undefined,
+          quick_request_coffee_price: quickRequestBuilding ? previousProfile.quick_request_coffee_price : undefined,
+          print_bw_price: previousProfile.can_manage_print_pricing ? previousProfile.print_bw_price : undefined,
+          print_color_price: previousProfile.can_manage_print_pricing ? previousProfile.print_color_price : undefined,
+          print_legal_price: previousProfile.can_manage_print_pricing ? previousProfile.print_legal_price : undefined,
+          office_wallet_credit_enabled: previousProfile.office_wallet_credit_enabled,
+        });
+      } catch (toggleError) {
+        setProfile(previousProfile);
+        setError(errorMessage(toggleError, 'Could not update store status.'));
+        throw toggleError;
+      }
+    })();
+
+    storeToggleInFlightRef.current = request;
+
+    return request.finally(() => {
+      if (storeToggleInFlightRef.current === request) {
+        storeToggleInFlightRef.current = null;
+        setStoreStatusUpdating(false);
+      }
+    });
   };
 
   const toggleProductActive = async (item: MenuItem): Promise<void> => {
+    const productKey = item.predefined_product_id ?? item.id;
+    const existingRequest = productToggleInFlightRef.current[productKey];
+    if (existingRequest) {
+      return existingRequest;
+    }
+
     const nextAvailability = !item.is_available;
     const updateCachedItem = (entry: MenuItem, isAvailable: boolean): MenuItem =>
       entry.id === item.id ||
@@ -624,31 +876,45 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
         ]),
       ),
     );
+    setUpdatingProductIds((current) => (current.includes(productKey) ? current : [...current, productKey]));
 
-    try {
-      await updateMenuItemAvailability(item.id, nextAvailability);
-      cacheRef.current.productsByBuilding[item.building_id] = {
-        loaded: true,
-        timestamp: Date.now(),
-      };
-      touchCache(['all']);
-    } catch (toggleError) {
-      setProductsByBuilding((current) =>
-        Object.fromEntries(
-          Object.entries(current).map(([buildingId, entries]) => [
-            buildingId,
-            entries.map((entry) => updateCachedItem(entry, item.is_available)),
-          ]),
-        ),
-      );
+    const request = (async () => {
+      try {
+        await updateMenuItemAvailability(item.id, nextAvailability);
+        const now = Date.now();
+        Object.keys(cacheRef.current.productsByBuilding).forEach((buildingId) => {
+          cacheRef.current.productsByBuilding[Number(buildingId)] = {
+            loaded: true,
+            timestamp: now,
+          };
+        });
+        touchCache(['all']);
+      } catch (toggleError) {
+        setProductsByBuilding((current) =>
+          Object.fromEntries(
+            Object.entries(current).map(([buildingId, entries]) => [
+              buildingId,
+              entries.map((entry) => updateCachedItem(entry, item.is_available)),
+            ]),
+          ),
+        );
 
-      const message = toggleError instanceof Error ? toggleError.message : 'Could not update menu item availability.';
-      setError(message);
-      throw toggleError;
-    }
+        setError(errorMessage(toggleError, 'Could not update menu item availability.'));
+        throw toggleError;
+      }
+    })();
+
+    productToggleInFlightRef.current[productKey] = request;
+
+    return request.finally(() => {
+      if (productToggleInFlightRef.current[productKey] === request) {
+        delete productToggleInFlightRef.current[productKey];
+        setUpdatingProductIds((current) => current.filter((id) => id !== productKey));
+      }
+    });
   };
 
-  const updateOrderStatus = async (
+  const updateOrderStatus = useCallback(async (
     orderId: number,
     status: OrderStatus,
     cancelReason?: string,
@@ -656,6 +922,9 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
     const previousOrdersByTab = ordersByTab;
     const previousOrderCounts = orderCounts;
     const previousDashboardOrderSummary = dashboardOrderSummary;
+    const previousOrder = Object.values(ordersByTab).flat().find((order) => order.id === orderId) ?? null;
+    const previousBucket = previousOrder ? groupVendorOrderStatus(previousOrder.status) : null;
+    const nextBucket = groupVendorOrderStatus(status);
     const optimisticOrders = sortVendorOrders(
       Object.values(ordersByTab)
         .flat()
@@ -671,10 +940,33 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
         ),
     );
     const optimisticOrdersByTab = buildOrdersByTab(optimisticOrders);
+    const optimisticOrderCounts = { ...previousOrderCounts };
+    if (previousBucket && previousBucket !== nextBucket) {
+      optimisticOrderCounts[previousBucket] = Math.max(0, optimisticOrderCounts[previousBucket] - 1);
+      optimisticOrderCounts[nextBucket] += 1;
+    }
+    const optimisticDashboardSummary = previousDashboardOrderSummary
+      ? {
+          ...previousDashboardOrderSummary,
+          total_sales:
+            previousDashboardOrderSummary.total_sales +
+            (previousBucket !== 'completed' && nextBucket === 'completed' ? (previousOrder?.total ?? 0) : 0),
+          recent_orders: previousDashboardOrderSummary.recent_orders.map((order) =>
+            order.id === orderId
+              ? {
+                  ...order,
+                  status,
+                  cancel_reason: status === 'cancelled' ? (cancelReason ?? order.cancel_reason ?? null) : null,
+                  allowed_transitions: [],
+                }
+              : order,
+          ),
+        }
+      : null;
 
     setOrdersByTab(optimisticOrdersByTab);
-    setOrderCounts(buildOrderCounts(optimisticOrdersByTab));
-    setDashboardOrderSummary(buildVendorOrderSummary(optimisticOrders));
+    setOrderCounts(optimisticOrderCounts);
+    setDashboardOrderSummary(optimisticDashboardSummary);
 
     try {
       const updated = await updateVendorOrderStatus(orderId, status, cancelReason);
@@ -683,11 +975,23 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
           optimisticOrders.map((order) => (order.id === orderId ? updated : order)),
         );
         const syncedOrdersByTab = buildOrdersByTab(syncedOrders);
+        const syncedDashboardSummary = previousDashboardOrderSummary
+          ? {
+              ...previousDashboardOrderSummary,
+              total_sales:
+                previousDashboardOrderSummary.total_sales +
+                (previousBucket !== 'completed' && nextBucket === 'completed' ? updated.total : 0),
+              recent_orders: previousDashboardOrderSummary.recent_orders.map((order) =>
+                order.id === orderId ? updated : order,
+              ),
+            }
+          : null;
 
         setOrdersByTab(syncedOrdersByTab);
-        setOrderCounts(buildOrderCounts(syncedOrdersByTab));
-        setDashboardOrderSummary(buildVendorOrderSummary(syncedOrders));
+        setOrderCounts(optimisticOrderCounts);
+        setDashboardOrderSummary(syncedDashboardSummary);
         touchCache(['all', 'orders']);
+        void refreshOrders({ force: true });
       }
     } catch (updateError) {
       setOrdersByTab(previousOrdersByTab);
@@ -697,7 +1001,56 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       setError(message);
       throw updateError;
     }
-  };
+  }, [dashboardOrderSummary, orderCounts, ordersByTab, refreshOrders, touchCache]);
+
+  const completeQuickRequest = useCallback(async (
+    orderId: number,
+    input: { tea_qty: number; coffee_qty: number; payment_method: QuickRequestPaymentMethod },
+  ): Promise<void> => {
+    const previousOrdersByTab = ordersByTab;
+    const previousOrderCounts = orderCounts;
+    const previousDashboardOrderSummary = dashboardOrderSummary;
+    const previousOrder = Object.values(previousOrdersByTab)
+      .flat()
+      .find((order) => order.id === orderId) ?? null;
+
+    try {
+      const updated = await completeVendorQuickRequest(orderId, input);
+      if (!updated) {
+        throw new Error('Server did not return the completed quick request.');
+      }
+
+      const syncedOrders = sortVendorOrders(
+        Object.values(previousOrdersByTab)
+          .flat()
+          .map((order) => (order.id === orderId ? updated : order)),
+      );
+      const previousBucket = previousOrder ? groupVendorOrderStatus(previousOrder.status) : null;
+      const nextBucket = groupVendorOrderStatus(updated.status);
+      const syncedCounts = { ...previousOrderCounts };
+
+      if (previousBucket && previousBucket !== nextBucket) {
+        syncedCounts[previousBucket] = Math.max(0, syncedCounts[previousBucket] - 1);
+        syncedCounts[nextBucket] += 1;
+      }
+
+      setOrdersByTab(buildOrdersByTab(syncedOrders));
+      setOrderCounts(syncedCounts);
+      setDashboardOrderSummary((current) => current ? {
+        ...current,
+        total_sales: current.total_sales + (previousBucket !== 'completed' ? updated.total : 0),
+        recent_orders: current.recent_orders.map((order) => order.id === orderId ? updated : order),
+      } : current);
+      touchCache(['all', 'orders']);
+      void refreshOrders({ force: true });
+    } catch (completionError) {
+      setOrdersByTab(previousOrdersByTab);
+      setOrderCounts(previousOrderCounts);
+      setDashboardOrderSummary(previousDashboardOrderSummary);
+      setError(errorMessage(completionError, 'Could not complete quick request.'));
+      throw completionError;
+    }
+  }, [dashboardOrderSummary, orderCounts, ordersByTab, refreshOrders, touchCache]);
 
   const upsertDeliveryPartner = async (input: {
     id?: number;
@@ -706,12 +1059,14 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
     mobile: string;
     password?: string;
     is_active?: boolean;
+    can_cancel_orders: boolean;
   }): Promise<void> => {
     const result = input.id
       ? await updateDeliveryPartner(input.id, {
           name: input.name,
           email: input.email,
           mobile: input.mobile,
+          can_cancel_orders: input.can_cancel_orders,
           ...(input.password ? { password: input.password } : {}),
         })
       : await createDeliveryPartner({
@@ -720,6 +1075,7 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
           mobile: input.mobile,
           password: input.password ?? '',
           is_active: input.is_active ?? true,
+          can_cancel_orders: input.can_cancel_orders,
         });
 
     if (!result) {
@@ -785,8 +1141,21 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const products = selectedBuildingId ? productsByBuilding[selectedBuildingId] ?? [] : [];
-  const allProducts = Object.values(productsByBuilding).flat();
+  const products = useMemo(
+    () => (selectedBuildingId ? productsByBuilding[selectedBuildingId] ?? [] : []),
+    [productsByBuilding, selectedBuildingId],
+  );
+  // The backend exposes one canonical vendor menu for every assigned building.
+  // Reuse the selected canonical list so dashboard counts cannot multiply by building count.
+  const allProducts = products;
+  const ordersHasMore = useMemo<Record<OrderTabKey, boolean>>(
+    () => ({
+      pending: orderPages.pending.currentPage < orderPages.pending.lastPage,
+      completed: orderPages.completed.currentPage < orderPages.completed.lastPage,
+      cancelled: orderPages.cancelled.currentPage < orderPages.cancelled.lastPage,
+    }),
+    [orderPages],
+  );
 
   const value = useMemo<VendorAppContextValue>(
     () => ({
@@ -800,6 +1169,8 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       ordersByTab,
       orderCounts,
       dashboardOrderSummary,
+      ordersHasMore,
+      ordersLoadingMoreTab,
       notifications,
       unreadNotificationCount,
       deliveryPartners,
@@ -808,19 +1179,25 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       ordersLoading,
       notificationsLoading,
       deliveryPartnersLoading,
+      storeStatusUpdating,
+      updatingProductIds,
       connectionUnavailable,
       connectionUnavailableReason,
       error,
       refreshAll,
       refreshProducts,
       refreshOrders,
+      loadMoreOrders,
       refreshNotifications,
       markNotificationRead,
+      markAllNotificationsRead,
       refreshDeliveryPartners,
+      saveBuildingDeliveryCharge,
       saveProfile,
       toggleStoreOpen,
       toggleProductActive,
       updateOrderStatus,
+      completeQuickRequest,
       upsertDeliveryPartner,
       toggleDeliveryPartnerStatus,
     }),
@@ -837,13 +1214,17 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
       notifications,
       notificationsLoading,
       orderCounts,
+      orderPages,
       ordersByTab,
+      ordersLoadingMoreTab,
       ordersLoading,
       products,
       productsLoading,
       profile,
       selectedBuildingId,
+      storeStatusUpdating,
       unreadNotificationCount,
+      updatingProductIds,
       user,
     ],
   );

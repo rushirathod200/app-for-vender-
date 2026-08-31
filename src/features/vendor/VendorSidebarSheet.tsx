@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { VendorTabKey } from '../../types/workflow';
 import { tokens } from '../shared/tokens';
@@ -10,6 +11,7 @@ interface VendorSidebarSheetProps {
   activeTab: VendorTabKey;
   title: string;
   subtitle: string;
+  canTopUpCustomerWallet: boolean;
   onClose: () => void;
   onSelectTab: (tab: VendorTabKey) => void;
 }
@@ -24,9 +26,10 @@ const menuItems: Array<{
   { key: 'orders', label: 'Orders', icon: 'receipt-outline', subtitle: 'Check active and completed orders' },
   { key: 'products', label: 'Products', icon: 'cube-outline', subtitle: 'Manage live menu items' },
   { key: 'delivery', label: 'Delivery Boys', icon: 'bicycle-outline', subtitle: 'Manage delivery partners' },
-  { key: 'wallet', label: 'Wallet Top-up', icon: 'wallet-outline', subtitle: 'Add amount in user or office wallet' },
+  { key: 'wallet', label: 'Customer Top-up', icon: 'wallet-outline', subtitle: 'Add funds usable only at your store' },
   { key: 'manual', label: 'Manual Orders', icon: 'create-outline', subtitle: 'Add tea and coffee entry for offices' },
   { key: 'reports', label: 'Reports', icon: 'bar-chart-outline', subtitle: 'Pending office tea and coffee report' },
+  { key: 'referral', label: 'Refer & Earn', icon: 'people-outline', subtitle: 'Bring a shop, earn real money' },
   { key: 'profile', label: 'Vendor Profile', icon: 'person-outline', subtitle: 'Store details and settings' },
 ];
 
@@ -35,15 +38,18 @@ export function VendorSidebarSheet({
   activeTab,
   title,
   subtitle,
+  canTopUpCustomerWallet,
   onClose,
   onSelectTab,
 }: VendorSidebarSheetProps) {
+  const insets = useSafeAreaInsets();
+
   return (
     <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
       <View style={styles.overlay}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
-        <View style={styles.panel}>
+        <View style={[styles.panel, { paddingTop: Math.max(insets.top, 14) + 14 }]}>
           <View style={styles.header}>
             <Text style={styles.headerEyebrow}>Vendor Menu</Text>
             <Text numberOfLines={1} style={styles.headerTitle}>
@@ -54,8 +60,14 @@ export function VendorSidebarSheet({
             </Text>
           </View>
 
-          <View style={styles.menuList}>
-            {menuItems.map((item) => {
+          {/* The list is taller than the panel once every shortcut is shown,
+              so it scrolls while the header stays put. */}
+          <ScrollView
+            style={styles.menuScroll}
+            contentContainerStyle={[styles.menuList, { paddingBottom: Math.max(insets.bottom, 16) + 12 }]}
+            showsVerticalScrollIndicator={false}
+          >
+            {menuItems.filter((item) => item.key !== 'wallet' || canTopUpCustomerWallet).map((item) => {
               const isActive = item.key === activeTab;
 
               return (
@@ -82,7 +94,7 @@ export function VendorSidebarSheet({
                 </Pressable>
               );
             })}
-          </View>
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -98,11 +110,9 @@ const styles = StyleSheet.create({
   panel: {
     width: '84%',
     maxWidth: 320,
-    minHeight: '100%',
+    height: '100%',
     backgroundColor: '#ffffff',
-    paddingTop: 58,
     paddingHorizontal: 16,
-    paddingBottom: 24,
     shadowColor: '#0f172a',
     shadowOpacity: 0.16,
     shadowRadius: 14,
@@ -135,8 +145,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     lineHeight: 18,
   },
-  menuList: {
+  menuScroll: {
+    flex: 1,
     marginTop: 16,
+  },
+  menuList: {
     gap: 10,
   },
   menuItem: {

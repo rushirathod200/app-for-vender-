@@ -74,15 +74,37 @@ function wasOrderHandledExternally(url: string): boolean {
   return handled === '1' || handled === 'true';
 }
 
+const NEW_ORDER_ACCEPT_ACTION = 'accept';
+const NEW_ORDER_REJECT_ACTION = 'reject';
+
+function orderActionFromResponseAction(actionIdentifier: string | undefined): NotificationOrderAction {
+  if (actionIdentifier === NEW_ORDER_ACCEPT_ACTION) return 'accepted';
+  if (actionIdentifier === NEW_ORDER_REJECT_ACTION) return 'rejected';
+  return null;
+}
+
 function NotificationListener() {
   const { handleNotificationTap } = useNotificationTap();
 
   useEffect(() => {
     if (Platform.OS === 'web') return;
 
-    const responseSubscription = Notifications.addNotificationResponseReceivedListener((response) => {
+    const handleResponse = (response: Notifications.NotificationResponse): void => {
       const data = response.notification.request.content.data as Record<string, unknown> | undefined;
-      handleNotificationTap(orderIdFromNotificationData(data));
+      handleNotificationTap(
+        orderIdFromNotificationData(data),
+        orderActionFromResponseAction(response.actionIdentifier),
+      );
+    };
+
+    const responseSubscription = Notifications.addNotificationResponseReceivedListener(handleResponse);
+
+    // Cold start: on iOS a killed app woken by tapping a notification may miss
+    // the initial response event. Replay it here.
+    void Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (response) {
+        handleResponse(response);
+      }
     });
 
     const receiveSubscription = Notifications.addNotificationReceivedListener((notification) => {

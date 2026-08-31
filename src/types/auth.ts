@@ -12,6 +12,7 @@ export interface AuthUser {
   below_minimum_order_mode?: 'charge_delivery' | 'block_order' | 'free_delivery';
   minimum_order_value?: number;
   office_wallet_credit_enabled?: boolean;
+  can_top_up_customer_wallet?: boolean;
 }
 
 export interface LoginResult {

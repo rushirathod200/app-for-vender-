@@ -1,12 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { fetchVendorOfficeWallets, topUpVendorWallet } from '../../api/vendorApi';
+import { topUpVendorWallet } from '../../api/vendorApi';
 import { useVendorApp } from '../../context/VendorAppContext';
-import { VendorOfficeWalletLookupItem, VendorWalletTargetType, VendorWalletTopUpReceipt } from '../../types/vendor';
+import { VendorWalletTopUpReceipt } from '../../types/vendor';
 import { useAutoClearValue } from '../../utils/useAutoClearValue';
-import { useDebouncedValue } from '../../utils/useDebouncedValue';
 import { resolveVendorDisplayName } from '../../utils/vendor';
 import { ActionButton } from '../shared/ui';
 import { tokens } from '../shared/tokens';
@@ -18,17 +17,11 @@ interface VendorWalletTopUpScreenProps {
 export function VendorWalletTopUpScreen({ onBack }: VendorWalletTopUpScreenProps) {
   const { profile, buildings, error } = useVendorApp();
   const scrollRef = useRef<ScrollView | null>(null);
-  const [targetType, setTargetType] = useState<VendorWalletTargetType>('user');
   const [mobile, setMobile] = useState('');
-  const [officeQuery, setOfficeQuery] = useState('');
-  const [officeResults, setOfficeResults] = useState<VendorOfficeWalletLookupItem[]>([]);
-  const [selectedOffice, setSelectedOffice] = useState<VendorOfficeWalletLookupItem | null>(null);
-  const [loadingOffices, setLoadingOffices] = useState(false);
   const [amount, setAmount] = useState('500');
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<VendorWalletTopUpReceipt | null>(null);
-  const debouncedOfficeQuery = useDebouncedValue(officeQuery, 350);
 
   useAutoClearValue(feedback, () => setFeedback(null));
 
@@ -37,58 +30,12 @@ export function VendorWalletTopUpScreen({ onBack }: VendorWalletTopUpScreenProps
     [buildings, profile?.name],
   );
 
-  useEffect(() => {
-    if (targetType !== 'office' || selectedOffice || !debouncedOfficeQuery.trim()) {
-      setOfficeResults([]);
-      return;
-    }
-
-    let cancelled = false;
-    setLoadingOffices(true);
-
-    void fetchVendorOfficeWallets({ query: debouncedOfficeQuery.trim() })
-      .then((results) => {
-        if (!cancelled) {
-          setOfficeResults(results);
-        }
-      })
-      .catch((lookupError) => {
-        if (!cancelled) {
-          setFeedback(lookupError instanceof Error ? lookupError.message : 'Could not load office wallets.');
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoadingOffices(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [debouncedOfficeQuery, selectedOffice, targetType]);
-
-  const changeTargetType = (nextTargetType: VendorWalletTargetType): void => {
-    setTargetType(nextTargetType);
-    setMobile('');
-    setOfficeQuery('');
-    setOfficeResults([]);
-    setSelectedOffice(null);
-    setFeedback(null);
-    setReceipt(null);
-  };
-
   const submit = async (): Promise<void> => {
     const cleanedMobile = mobile.replace(/\D/g, '');
     const numericAmount = Number(amount);
 
-    if (targetType === 'user' && cleanedMobile.length !== 10) {
+    if (cleanedMobile.length !== 10) {
       setFeedback('Enter a valid 10-digit mobile number.');
-      return;
-    }
-
-    if (targetType === 'office' && !selectedOffice) {
-      setFeedback('Search and select an office wallet first.');
       return;
     }
 
@@ -102,9 +49,8 @@ export function VendorWalletTopUpScreen({ onBack }: VendorWalletTopUpScreenProps
 
     try {
       const result = await topUpVendorWallet({
-        ...(targetType === 'user' ? { mobile: cleanedMobile } : { office_id: selectedOffice?.office_id }),
+        mobile: cleanedMobile,
         amount: numericAmount,
-        target_type: targetType,
       });
 
       if (!result) {
@@ -115,9 +61,6 @@ export function VendorWalletTopUpScreen({ onBack }: VendorWalletTopUpScreenProps
       setReceipt(result);
       setFeedback(result.message);
       setMobile('');
-      setOfficeQuery('');
-      setOfficeResults([]);
-      setSelectedOffice(null);
       setAmount('500');
     } catch (submitError) {
       setFeedback(submitError instanceof Error ? submitError.message : 'Could not complete wallet top-up.');
@@ -144,127 +87,45 @@ export function VendorWalletTopUpScreen({ onBack }: VendorWalletTopUpScreenProps
             <Ionicons name="arrow-back" size={18} color="#232328" />
           </Pressable>
           <View style={styles.headerBody}>
-            <Text style={styles.headerTitle}>Wallet Top-up</Text>
-            <Text style={styles.headerSubtitle}>Add amount in anyone wallet using mobile number.</Text>
+            <Text style={styles.headerTitle}>Customer Top-up</Text>
+            <Text style={styles.headerSubtitle}>Add funds using the customer's mobile number.</Text>
           </View>
         </View>
 
         <View style={styles.heroCard}>
-          <Text style={styles.heroEyebrow}>Vendor Wallet Tool</Text>
+          <Text style={styles.heroEyebrow}>Quick Request Vendor Tool</Text>
           <Text style={styles.heroTitle}>{storeName}</Text>
-          <Text style={styles.heroSub}>Credit customer or office wallets directly from the vendor app.</Text>
+          <Text style={styles.heroSub}>These funds can be used only for orders placed with your store.</Text>
         </View>
 
         <View style={styles.formCard}>
-          <Text style={styles.cardTitle}>Select Wallet Type</Text>
+          <Text style={styles.cardTitle}>Customer Wallet</Text>
 
-          <View style={styles.typeRow}>
-            <Pressable
-              onPress={() => changeTargetType('user')}
-              style={[styles.typeCard, targetType === 'user' ? styles.typeCardActive : null]}
-            >
-              <Ionicons name="person-outline" size={18} color={targetType === 'user' ? '#ffffff' : tokens.colors.vendorPrimary} />
-              <Text style={[styles.typeTitle, targetType === 'user' ? styles.typeTitleActive : null]}>User Wallet</Text>
-              <Text style={[styles.typeSub, targetType === 'user' ? styles.typeSubActive : null]}>
-                Credit normal customer wallet
-              </Text>
-            </Pressable>
-
-            <Pressable
-              onPress={() => changeTargetType('office')}
-              style={[styles.typeCard, targetType === 'office' ? styles.typeCardActive : null]}
-            >
-              <Ionicons name="business-outline" size={18} color={targetType === 'office' ? '#ffffff' : tokens.colors.vendorPrimary} />
-              <Text style={[styles.typeTitle, targetType === 'office' ? styles.typeTitleActive : null]}>Office Wallet</Text>
-              <Text style={[styles.typeSub, targetType === 'office' ? styles.typeSubActive : null]}>
-                Credit approved office wallet
-              </Text>
-            </Pressable>
+          <View style={styles.walletNotice}>
+            <Ionicons name="storefront-outline" size={18} color={tokens.colors.vendorPrimary} />
+            <Text style={styles.walletNoticeText}>Balance added here is linked to this customer and your store.</Text>
           </View>
 
-          {targetType === 'user' ? (
-            <View style={styles.fieldWrap}>
-              <Text style={styles.fieldLabel}>Mobile Number</Text>
-              <View style={styles.inputWrap}>
-                <Ionicons name="call-outline" size={18} color={tokens.colors.vendorPrimary} />
-                <TextInput
-                  value={mobile}
-                  onChangeText={(value) => setMobile(value.replace(/\D/g, '').slice(0, 10))}
-                  keyboardType="number-pad"
-                  onFocus={() => {
-                    setTimeout(() => {
-                      scrollRef.current?.scrollTo({ y: 260, animated: true });
-                    }, 120);
-                  }}
-                  placeholder="Enter linked mobile number"
-                  placeholderTextColor="#9a9aa3"
-                  style={styles.input}
-                  maxLength={10}
-                />
-              </View>
+          <View style={styles.fieldWrap}>
+            <Text style={styles.fieldLabel}>Mobile Number</Text>
+            <View style={styles.inputWrap}>
+              <Ionicons name="call-outline" size={18} color={tokens.colors.vendorPrimary} />
+              <TextInput
+                value={mobile}
+                onChangeText={(value) => setMobile(value.replace(/\D/g, '').slice(0, 10))}
+                keyboardType="number-pad"
+                onFocus={() => {
+                  setTimeout(() => {
+                    scrollRef.current?.scrollTo({ y: 260, animated: true });
+                  }, 120);
+                }}
+                placeholder="Enter linked mobile number"
+                placeholderTextColor="#9a9aa3"
+                style={styles.input}
+                maxLength={10}
+              />
             </View>
-          ) : (
-            <View style={styles.fieldWrap}>
-              <Text style={styles.fieldLabel}>Office Number</Text>
-              {selectedOffice ? (
-                <View style={styles.selectedOfficeCard}>
-                  <View style={styles.selectedOfficeBody}>
-                    <Text style={styles.selectedOfficeTitle}>Office {selectedOffice.office_name}</Text>
-                    <Text style={styles.selectedOfficeMeta}>{selectedOffice.label}</Text>
-                    <Text style={styles.selectedOfficeMeta}>Balance: Rs {selectedOffice.balance.toFixed(2)}</Text>
-                  </View>
-                  <Pressable
-                    onPress={() => {
-                      setSelectedOffice(null);
-                      setOfficeQuery('');
-                    }}
-                    style={styles.changeOfficeButton}
-                  >
-                    <Text style={styles.changeOfficeText}>Change</Text>
-                  </Pressable>
-                </View>
-              ) : (
-                <>
-                  <View style={styles.inputWrap}>
-                    <Ionicons name="business-outline" size={18} color={tokens.colors.vendorPrimary} />
-                    <TextInput
-                      value={officeQuery}
-                      onChangeText={(value) => setOfficeQuery(value.replace(/[^a-zA-Z0-9 -]/g, '').slice(0, 50))}
-                      placeholder="Search office number like 202"
-                      placeholderTextColor="#9a9aa3"
-                      style={styles.input}
-                      maxLength={50}
-                    />
-                  </View>
-                  {officeResults.length ? (
-                    <View style={styles.officeResults}>
-                      {officeResults.map((office) => (
-                        <Pressable
-                          key={office.office_id}
-                          onPress={() => {
-                            setSelectedOffice(office);
-                            setOfficeQuery('');
-                            setOfficeResults([]);
-                          }}
-                          style={styles.officeResultItem}
-                        >
-                          <View style={styles.selectedOfficeBody}>
-                            <Text style={styles.selectedOfficeTitle}>Office {office.office_name}</Text>
-                            <Text style={styles.selectedOfficeMeta}>{office.label}</Text>
-                          </View>
-                          <Text style={styles.officeBalance}>Rs {office.balance.toFixed(2)}</Text>
-                        </Pressable>
-                      ))}
-                    </View>
-                  ) : officeQuery.trim() ? (
-                    <Text style={styles.lookupHint}>{loadingOffices ? 'Searching offices...' : 'No office wallet found.'}</Text>
-                  ) : (
-                    <Text style={styles.lookupHint}>Enter an office number, then select the matching office.</Text>
-                  )}
-                </>
-              )}
-            </View>
-          )}
+          </View>
 
           <View style={styles.fieldWrap}>
             <Text style={styles.fieldLabel}>Amount</Text>
@@ -291,7 +152,7 @@ export function VendorWalletTopUpScreen({ onBack }: VendorWalletTopUpScreenProps
             onPress={() => {
               void submit();
             }}
-            disabled={submitting || (targetType === 'office' && !selectedOffice)}
+            disabled={submitting}
             icon="add-circle-outline"
           />
 
@@ -309,7 +170,7 @@ export function VendorWalletTopUpScreen({ onBack }: VendorWalletTopUpScreenProps
             </Text>
 
             <View style={styles.receiptBalanceRow}>
-              <Text style={styles.receiptBalanceLabel}>Updated Balance</Text>
+              <Text style={styles.receiptBalanceLabel}>Available at {storeName}</Text>
               <Text style={styles.receiptBalanceValue}>Rs {receipt.balance.toFixed(2)}</Text>
             </View>
           </View>
@@ -397,39 +258,23 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '900',
   },
-  typeRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  typeCard: {
-    flex: 1,
-    borderRadius: 16,
+  walletNotice: {
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#ececf0',
-    backgroundColor: '#ffffff',
-    padding: 12,
-    gap: 6,
+    borderColor: '#ffd4b4',
+    backgroundColor: '#fff5ec',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
   },
-  typeCardActive: {
-    borderColor: tokens.colors.vendorPrimary,
-    backgroundColor: tokens.colors.vendorPrimary,
-  },
-  typeTitle: {
-    color: '#202026',
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  typeTitleActive: {
-    color: '#ffffff',
-  },
-  typeSub: {
-    color: '#8a8a94',
-    fontSize: 11,
-    fontWeight: '600',
-    lineHeight: 16,
-  },
-  typeSubActive: {
-    color: '#fff1e6',
+  walletNoticeText: {
+    flex: 1,
+    color: '#6f4a31',
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 18,
   },
   fieldWrap: {
     gap: 6,
@@ -454,69 +299,6 @@ const styles = StyleSheet.create({
     flex: 1,
     color: '#232328',
     fontSize: 15,
-    fontWeight: '600',
-  },
-  selectedOfficeCard: {
-    minHeight: 64,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#ffd4b4',
-    backgroundColor: '#fff5ec',
-    padding: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  selectedOfficeBody: {
-    flex: 1,
-    gap: 3,
-  },
-  selectedOfficeTitle: {
-    color: '#202026',
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  selectedOfficeMeta: {
-    color: '#777781',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  changeOfficeButton: {
-    borderRadius: 10,
-    backgroundColor: tokens.colors.vendorPrimary,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  changeOfficeText: {
-    color: '#ffffff',
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  officeResults: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#e6e6ec',
-    backgroundColor: '#ffffff',
-    overflow: 'hidden',
-  },
-  officeResultItem: {
-    minHeight: 58,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e6e6ec',
-  },
-  officeBalance: {
-    color: tokens.colors.vendorPrimary,
-    fontSize: 12,
-    fontWeight: '900',
-  },
-  lookupHint: {
-    color: '#85858f',
-    fontSize: 11,
     fontWeight: '600',
   },
   feedbackText: {

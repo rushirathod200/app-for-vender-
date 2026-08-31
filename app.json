@@ -3,7 +3,7 @@
     "name": "DeskDrop Vendor",
     "slug": "cafe",
     "scheme": "deskdropvendor",
-    "version": "1.1.0",
+    "version": "1.1.12",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -15,10 +15,11 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.deskdrop.vendor",
-      "buildNumber": "1"
+      "buildNumber": "3"
     },
     "android": {
       "package": "com.deskdrop.vendor",
+      "versionCode": 12,
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -34,6 +35,14 @@
     "plugins": [
       "expo-secure-store",
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow DeskDrop Vendor to choose product photos for your menu.",
+          "cameraPermission": "Allow DeskDrop Vendor to take product photos for your menu.",
+          "microphonePermission": false
+        }
+      ],
+      [
         "expo-notifications",
         {
           "icon": "./assets/icon.png",
@@ -43,18 +52,21 @@
           ],
           "defaultChannel": "orders"
         }
-      ]
+      ],
+      "expo-font",
+      "./plugins/withDeskDropVendorOrderAlerts"
     ],
     "extra": {
       "eas": {
         "projectId": "ac390b74-f27b-4b48-8710-887d619e147c"
       }
     },
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
+    "runtimeVersion": "1.1.11",
     "updates": {
-      "url": "https://u.expo.dev/ac390b74-f27b-4b48-8710-887d619e147c"
+      "url": "https://u.expo.dev/ac390b74-f27b-4b48-8710-887d619e147c",
+      "requestHeaders": {
+        "expo-channel-name": "production"
+      }
     },
     "owner": "rushirathod943s-organization"
   }

@@ -65,6 +65,7 @@ function parseStoredMobileUser(value: string | null): AuthUser | null {
       below_minimum_order_mode: parsed.below_minimum_order_mode,
       minimum_order_value: parsed.minimum_order_value,
       office_wallet_credit_enabled: parsed.office_wallet_credit_enabled,
+      can_top_up_customer_wallet: parsed.can_top_up_customer_wallet === true,
     };
   } catch {
     return null;
@@ -164,7 +165,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (freshUser && (freshUser.role === 'vendor' || freshUser.role === 'delivery')) {
           setToken(storedToken);
           setUser(freshUser);
-          await saveNativeOverlayAuth(storedToken);
+          await saveNativeOverlayAuth(storedToken, freshUser.role);
           await setStoredAuthUser(JSON.stringify(freshUser));
           if (Platform.OS !== 'web') {
             registerPushTokenIfAvailable(freshUser.role).catch(logPushRegistrationError);
@@ -182,7 +183,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } else {
           setToken(storedToken);
           setUser(storedUser);
-          await saveNativeOverlayAuth(storedToken);
+          await saveNativeOverlayAuth(
+            storedToken,
+            storedUser.role === 'delivery' ? 'delivery' : 'vendor',
+          );
         }
       } finally {
         if (!cancelled) {
@@ -225,7 +229,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(resolvedUser);
     setToken(result.token);
     apiClient.setToken(result.token);
-    await saveNativeOverlayAuth(result.token);
+    await saveNativeOverlayAuth(result.token, resolvedUser.role);
 
     await Promise.all([
       setStoredAuthToken(result.token),

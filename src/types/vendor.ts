@@ -5,10 +5,14 @@ export type ManualOfficeRecordedPaymentMethod = ManualOfficePaymentMethod;
 export type QuickRequestPaymentMethod = 'cod' | 'office_wallet' | 'wallet';
 export type StoreHoursDayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
 
-export type StoreHours = Record<StoreHoursDayKey, {
-  is_open: boolean;
+export interface StoreHoursSlot {
   opens_at: string;
   closes_at: string;
+}
+
+export type StoreHours = Record<StoreHoursDayKey, {
+  is_open: boolean;
+  slots: StoreHoursSlot[];
 }>;
 
 export type OrderStatus =
@@ -38,6 +42,23 @@ export interface Building {
   orders_count?: number;
   is_quick_request_vendor?: boolean;
   is_print_vendor?: boolean;
+  default_delivery_charge: number;
+  delivery_charge_override: number | null;
+  effective_delivery_charge: number;
+  uses_default_delivery_charge: boolean;
+  default_below_minimum_order_mode: BelowMinimumOrderMode;
+  below_minimum_order_mode_override: BelowMinimumOrderMode | null;
+  effective_below_minimum_order_mode: BelowMinimumOrderMode;
+  default_minimum_order_value: number;
+  minimum_order_value_override: number | null;
+  effective_minimum_order_value: number;
+  uses_default_order_policy: boolean;
+}
+
+export interface BuildingOrderPolicyInput {
+  delivery_charge_override: number | null;
+  below_minimum_order_mode_override: BelowMinimumOrderMode | null;
+  minimum_order_value_override: number | null;
 }
 
 export interface CatalogProduct {
@@ -67,6 +88,49 @@ export interface MenuItem {
   description?: string | null;
   building_name?: string | null;
   variants: MenuItemVariant[];
+  is_vendor_owned?: boolean;
+}
+
+export interface ProductSubcategoryOption {
+  id: number;
+  name: string;
+  slug: string;
+}
+
+export interface ProductCategoryOption {
+  id: number;
+  name: string;
+  slug: string;
+  service_group: string | null;
+  subcategories: ProductSubcategoryOption[];
+}
+
+export interface ProductImageAsset {
+  uri: string;
+  fileName: string | null;
+  mimeType: string | null;
+  file?: Blob | null;
+}
+
+export interface VendorProductVariantInput {
+  name: string;
+  mrp: number | null;
+  price: number;
+  gst_rate: number | null;
+  is_available: boolean;
+}
+
+export interface VendorProductCreateInput {
+  name: string;
+  description: string | null;
+  category_id: number;
+  subcategory_id: number;
+  mrp: number | null;
+  price: number;
+  gst_rate: number | null;
+  photo: ProductImageAsset;
+  is_available: boolean;
+  variants: VendorProductVariantInput[];
 }
 
 export interface MenuItemVariant {
@@ -81,6 +145,7 @@ export interface MenuItemVariant {
 export interface VendorOrderItem {
   id: number;
   title: string;
+  variant_name: string | null;
   qty: number;
   unit_price: number;
   line_total: number;
@@ -309,6 +374,7 @@ export interface VendorDeliveryPartner {
   is_active: boolean;
   partner_active: boolean;
   app_access_active: boolean;
+  can_cancel_orders: boolean;
   active_order_count: number;
 }
 
@@ -330,6 +396,7 @@ export interface VendorProfile {
   quick_request_tea_price: number;
   quick_request_coffee_price: number;
   can_manage_quick_request_pricing: boolean;
+  can_top_up_customer_wallet: boolean;
   vendor_category: string | null;
   print_bw_price: number;
   print_color_price: number;
@@ -340,7 +407,7 @@ export interface VendorProfile {
   active_order_count: number;
 }
 
-export type VendorWalletTargetType = 'user' | 'office';
+export type VendorWalletTargetType = 'user';
 
 export interface VendorOfficeWalletLookupItem {
   office_id: number;

@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Image,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -8,6 +7,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { RemoteImage } from '../../components/RemoteImage';
 
 import { fetchAssignedBuildings, fetchVendorMenu, updateMenuItemAvailability } from '../../api/vendorApi';
 import { AppButton } from '../../components/AppButton';
@@ -220,7 +220,13 @@ export function MenuScreen() {
                     <Text style={styles.price}>{formatCurrency(item.price)}</Text>
                   </View>
 
-                  {item.photo_url ? <Image source={{ uri: item.photo_url }} style={styles.photo} /> : null}
+                  {item.photo_url ? (
+                    <RemoteImage
+                      accessibilityLabel={`${item.title} product image`}
+                      uri={item.photo_url}
+                      style={styles.photo}
+                    />
+                  ) : null}
                 </View>
 
                 <View style={styles.stockRow}>

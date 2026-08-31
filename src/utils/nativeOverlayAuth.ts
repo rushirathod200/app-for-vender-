@@ -3,18 +3,21 @@ import { NativeModules, Platform } from 'react-native';
 import { API_BASE_URL } from '../config/api';
 
 type DeskDropNativeAuthModule = {
-  save?: (token: string, apiBaseUrl: string) => Promise<void>;
+  save?: (token: string, apiBaseUrl: string, role: 'vendor' | 'delivery') => Promise<void>;
   clear?: () => Promise<void>;
 };
 
 const nativeAuth = NativeModules.DeskDropNativeAuth as DeskDropNativeAuthModule | undefined;
 
-export async function saveNativeOverlayAuth(token: string): Promise<void> {
+export async function saveNativeOverlayAuth(
+  token: string,
+  role: 'vendor' | 'delivery',
+): Promise<void> {
   if (Platform.OS !== 'android' || !nativeAuth?.save) {
     return;
   }
 
-  await nativeAuth.save(token, API_BASE_URL);
+  await nativeAuth.save(token, API_BASE_URL, role);
 }
 
 export async function clearNativeOverlayAuth(): Promise<void> {

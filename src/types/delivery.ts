@@ -22,6 +22,7 @@ export interface DeliveryProfile {
 export interface DeliveryOrderItem {
   id: number;
   title: string;
+  variant_name: string | null;
   qty: number;
   unit_price: number;
   line_total: number;
@@ -42,6 +43,7 @@ export interface DeliveryOrder {
   quick_request: QuickRequestDetails | null;
   placed_at: string | null;
   allowed_transitions: OrderStatus[];
+  can_cancel_order: boolean;
   building_name: string | null;
   building_address: string | null;
   wing_name: string | null;

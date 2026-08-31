@@ -1,6 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Animated,
+  Easing,
+  FlatList,
   KeyboardAvoidingView,
   Linking,
   Modal,
@@ -19,7 +22,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useVendorApp } from '../../context/VendorAppContext';
 import { NotificationOrderAction } from '../../context/NotificationTapContext';
 import { fetchVendorOrder } from '../../api/vendorApi';
-import { OrderStatus, PrintOrderFile, VendorOrder } from '../../types/vendor';
+import { OrderStatus, PrintOrderFile, QuickRequestPaymentMethod, VendorOrder } from '../../types/vendor';
 import { formatCurrency, prettifyStatus } from '../../utils/format';
 import { useAutoClearValue } from '../../utils/useAutoClearValue';
 import {
@@ -28,7 +31,7 @@ import {
   getVendorOrderTransitions,
   groupVendorOrderStatus,
 } from '../../utils/vendor';
-import { ActionButton, SectionTitle, SegmentTabs, StatusBadge } from '../shared/ui';
+import { ActionButton, QuantityStepper, SectionTitle, SegmentTabs, StatusBadge } from '../shared/ui';
 import { tokens } from '../shared/tokens';
 
 type OrderTab = 'pending' | 'completed' | 'cancelled';
@@ -56,25 +59,40 @@ export function VendorOrdersScreen({
   notificationHandledExternally = false,
 }: VendorOrdersScreenProps) {
   const insets = useSafeAreaInsets();
-  const { ordersByTab, orderCounts, ordersLoading, error, refreshOrders, updateOrderStatus } = useVendorApp();
+  const {
+    ordersByTab,
+    orderCounts,
+    ordersHasMore,
+    ordersLoading,
+    ordersLoadingMoreTab,
+    error,
+    refreshOrders,
+    loadMoreOrders,
+    updateOrderStatus,
+    completeQuickRequest,
+  } = useVendorApp();
   const [activeStatus, setActiveStatus] = useState<OrderTab>('pending');
   const [updatingKey, setUpdatingKey] = useState<string | null>(null);
   const [fileActionKey, setFileActionKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [cancelTargetOrderId, setCancelTargetOrderId] = useState<number | null>(null);
   const [popupOrderId, setPopupOrderId] = useState<number | null>(null);
-  const [popupSeconds, setPopupSeconds] = useState(20);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelReasonError, setCancelReasonError] = useState<string | null>(null);
-  const [visibleCounts, setVisibleCounts] = useState<Record<OrderTab, number>>({
-    pending: ORDER_PAGE_SIZE,
-    completed: ORDER_PAGE_SIZE,
-    cancelled: ORDER_PAGE_SIZE,
-  });
+  const [quickRequestTargetOrderId, setQuickRequestTargetOrderId] = useState<number | null>(null);
+  const [quickRequestTeaQty, setQuickRequestTeaQty] = useState(0);
+  const [quickRequestCoffeeQty, setQuickRequestCoffeeQty] = useState(0);
+  const [quickRequestPaymentMethod, setQuickRequestPaymentMethod] = useState<QuickRequestPaymentMethod>('cod');
+  const [quickRequestError, setQuickRequestError] = useState<string | null>(null);
   const modalBottomPadding = Math.max(insets.bottom, 14) + 8;
   const appliedNotificationTapRef = useRef(0);
+  const refreshOrdersRef = useRef(refreshOrders);
 
   useAutoClearValue(actionError, () => setActionError(null));
+
+  useEffect(() => {
+    refreshOrdersRef.current = refreshOrders;
+  }, [refreshOrders]);
 
   useEffect(() => {
     void refreshOrders();
@@ -106,19 +124,6 @@ export function VendorOrdersScreen({
     }
 
     const nextTab = groupVendorOrderStatus(matchedOrder.status);
-    const matchIndex = ordersByTab[nextTab].findIndex((order) => order.id === highlightedOrderId);
-    if (matchIndex >= 0) {
-      const requiredVisibleCount = Math.max(
-        ORDER_PAGE_SIZE,
-        Math.ceil((matchIndex + 1) / ORDER_PAGE_SIZE) * ORDER_PAGE_SIZE,
-      );
-      setVisibleCounts((current) => (
-        current[nextTab] >= requiredVisibleCount
-          ? current
-          : { ...current, [nextTab]: requiredVisibleCount }
-      ));
-    }
-
     setActiveStatus(nextTab);
     appliedNotificationTapRef.current = notificationTapRequestId;
 
@@ -155,7 +160,6 @@ export function VendorOrdersScreen({
 
     if (matchedOrder.status === 'placed') {
       setPopupOrderId(matchedOrder.id);
-      setPopupSeconds(20);
     } else {
       setPopupOrderId(null);
       setActionError(null);
@@ -167,19 +171,16 @@ export function VendorOrdersScreen({
       return;
     }
 
-    const timer = setInterval(() => {
-      setPopupSeconds((current) => Math.max(0, current - 1));
-    }, 1000);
+    const refreshTimer = setInterval(() => {
+      void refreshOrdersRef.current({ force: true });
+    }, 3_000);
 
-    return () => clearInterval(timer);
+    return () => clearInterval(refreshTimer);
   }, [popupOrderId]);
 
   const filteredOrders = useMemo(() => ordersByTab[activeStatus], [activeStatus, ordersByTab]);
-  const visibleOrders = useMemo(
-    () => filteredOrders.slice(0, visibleCounts[activeStatus]),
-    [activeStatus, filteredOrders, visibleCounts],
-  );
-  const hasMoreOrders = visibleOrders.length < filteredOrders.length;
+  const visibleOrders = filteredOrders;
+  const hasMoreOrders = ordersHasMore[activeStatus];
 
   const cancelTargetOrder = useMemo(
     () =>
@@ -187,6 +188,13 @@ export function VendorOrdersScreen({
         ? (Object.values(ordersByTab).flat().find((order) => order.id === cancelTargetOrderId) ?? null)
         : null,
     [cancelTargetOrderId, ordersByTab],
+  );
+  const quickRequestTargetOrder = useMemo(
+    () =>
+      quickRequestTargetOrderId
+        ? (Object.values(ordersByTab).flat().find((order) => order.id === quickRequestTargetOrderId) ?? null)
+        : null,
+    [ordersByTab, quickRequestTargetOrderId],
   );
   const popupOrder = useMemo(
     () =>
@@ -196,18 +204,86 @@ export function VendorOrdersScreen({
     [ordersByTab, popupOrderId],
   );
 
+  const quickRequestTotalPreview = useMemo(() => {
+    if (!quickRequestTargetOrder?.quick_request) {
+      return 0;
+    }
+
+    return roundCurrency(
+      (quickRequestTeaQty * quickRequestTargetOrder.quick_request.tea_price)
+        + (quickRequestCoffeeQty * quickRequestTargetOrder.quick_request.coffee_price),
+    );
+  }, [quickRequestCoffeeQty, quickRequestTargetOrder, quickRequestTeaQty]);
+
+  const quickRequestPaymentOptions = useMemo<Array<{
+    key: QuickRequestPaymentMethod;
+    label: string;
+    enabled: boolean;
+    balance?: number;
+    creditEnabled?: boolean;
+  }>>(() => {
+    const quickRequest = quickRequestTargetOrder?.quick_request;
+    if (!quickRequest) {
+      return [{ key: 'cod', label: 'Cash', enabled: true }];
+    }
+
+    const options: Array<{
+      key: QuickRequestPaymentMethod;
+      label: string;
+      enabled: boolean;
+      balance?: number;
+      creditEnabled?: boolean;
+    }> = [];
+
+    if (quickRequest.office_wallet_available) {
+      options.push({
+        key: 'office_wallet',
+        label: 'Office Wallet',
+        enabled: quickRequest.office_wallet_credit_enabled || quickRequest.office_wallet_balance >= quickRequestTotalPreview,
+        balance: quickRequest.office_wallet_balance,
+        creditEnabled: quickRequest.office_wallet_credit_enabled,
+      });
+    }
+
+    if (quickRequest.wallet_available && quickRequest.wallet_balance > 0) {
+      options.push({
+        key: 'wallet',
+        label: 'Personal Wallet',
+        enabled: quickRequest.wallet_balance >= quickRequestTotalPreview,
+        balance: quickRequest.wallet_balance,
+      });
+    }
+
+    options.push({ key: 'cod', label: 'Cash', enabled: true });
+    return options;
+  }, [quickRequestTargetOrder, quickRequestTotalPreview]);
+
   useEffect(() => {
-    if (popupOrder && popupOrder.status !== 'placed') {
+    if (!quickRequestTargetOrder) {
+      return;
+    }
+
+    const selectedOption = quickRequestPaymentOptions.find((option) => option.key === quickRequestPaymentMethod);
+    if (selectedOption?.enabled) {
+      return;
+    }
+
+    const fallbackOption = quickRequestPaymentOptions.find((option) => option.enabled);
+    setQuickRequestPaymentMethod(fallbackOption?.key ?? 'cod');
+  }, [quickRequestPaymentMethod, quickRequestPaymentOptions, quickRequestTargetOrder]);
+
+  useEffect(() => {
+    if (popupOrderId && (!popupOrder || popupOrder.status !== 'placed')) {
       setPopupOrderId(null);
     }
-  }, [popupOrder]);
+  }, [popupOrder, popupOrderId]);
 
   const topMessages = useMemo(
     () => Array.from(new Set([error, actionError].filter((message): message is string => !!message))),
     [actionError, error],
   );
 
-  const handleStatusUpdate = async (
+  const handleStatusUpdate = useCallback(async (
     orderId: number,
     nextStatus: OrderStatus,
     reason?: string,
@@ -224,9 +300,9 @@ export function VendorOrdersScreen({
     } finally {
       setUpdatingKey(null);
     }
-  };
+  }, [updateOrderStatus]);
 
-  const handlePrintFileAction = async (
+  const handlePrintFileAction = useCallback(async (
     orderId: number,
     file: PrintOrderFile,
     action: 'download' | 'share',
@@ -261,9 +337,9 @@ export function VendorOrdersScreen({
     } finally {
       setFileActionKey(null);
     }
-  };
+  }, []);
 
-  const handleCallCustomer = async (phoneNumber: string | null): Promise<void> => {
+  const handleCallCustomer = useCallback(async (phoneNumber: string | null): Promise<void> => {
     const normalizedNumber = phoneNumber?.replace(/[^\d+]/g, '') ?? '';
     if (!normalizedNumber) {
       setActionError('Customer phone number is not available.');
@@ -275,13 +351,13 @@ export function VendorOrdersScreen({
     } catch (callError) {
       setActionError(callError instanceof Error ? callError.message : 'Could not open the dialer.');
     }
-  };
+  }, []);
 
-  const openCancelReasonModal = (orderId: number): void => {
+  const openCancelReasonModal = useCallback((orderId: number): void => {
     setCancelTargetOrderId(orderId);
     setCancelReason('');
     setCancelReasonError(null);
-  };
+  }, []);
 
   const closeCancelReasonModal = (): void => {
     if (updatingKey) {
@@ -312,6 +388,62 @@ export function VendorOrdersScreen({
       setCancelReason('');
     } catch {
       // Error state is handled by handleStatusUpdate.
+    }
+  };
+
+  const openQuickRequestModal = useCallback((order: VendorOrder): void => {
+    setQuickRequestTargetOrderId(order.id);
+    setQuickRequestTeaQty(order.quick_request?.suggested_tea_qty ?? 0);
+    setQuickRequestCoffeeQty(order.quick_request?.suggested_coffee_qty ?? 0);
+    setQuickRequestPaymentMethod('cod');
+    setQuickRequestError(null);
+  }, []);
+
+  const closeQuickRequestModal = (): void => {
+    if (updatingKey) {
+      return;
+    }
+
+    setQuickRequestTargetOrderId(null);
+    setQuickRequestTeaQty(0);
+    setQuickRequestCoffeeQty(0);
+    setQuickRequestPaymentMethod('cod');
+    setQuickRequestError(null);
+  };
+
+  const submitQuickRequestCompletion = async (): Promise<void> => {
+    if (!quickRequestTargetOrder) {
+      return;
+    }
+
+    if (quickRequestTeaQty + quickRequestCoffeeQty <= 0) {
+      setQuickRequestError('Add at least one tea or coffee.');
+      return;
+    }
+
+    const key = `${quickRequestTargetOrder.id}:quick-request-complete`;
+    setUpdatingKey(key);
+    setActionError(null);
+    setQuickRequestError(null);
+
+    try {
+      await completeQuickRequest(quickRequestTargetOrder.id, {
+        tea_qty: quickRequestTeaQty,
+        coffee_qty: quickRequestCoffeeQty,
+        payment_method: quickRequestPaymentMethod,
+      });
+      setQuickRequestTargetOrderId(null);
+      setQuickRequestTeaQty(0);
+      setQuickRequestCoffeeQty(0);
+      setQuickRequestPaymentMethod('cod');
+    } catch (completionError) {
+      const message = completionError instanceof Error
+        ? completionError.message
+        : 'Could not complete quick request.';
+      setActionError(message);
+      setQuickRequestError(message);
+    } finally {
+      setUpdatingKey(null);
     }
   };
 
@@ -351,9 +483,15 @@ export function VendorOrdersScreen({
 
   return (
     <View style={styles.root}>
-      <ScrollView
+      <FlatList
+        data={visibleOrders}
+        keyExtractor={(order) => String(order.id)}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        initialNumToRender={6}
+        maxToRenderPerBatch={5}
+        updateCellsBatchingPeriod={50}
+        windowSize={5}
         refreshControl={
           <RefreshControl
             refreshing={ordersLoading}
@@ -362,176 +500,54 @@ export function VendorOrdersScreen({
             }}
           />
         }
-      >
-        <SectionTitle title="Orders" subtitle="Manage current customer orders" />
-
-        <SegmentTabs
-          tabs={orderTabs.map((tab) => ({ key: tab.key, label: tab.label, count: orderCounts[tab.key] }))}
-          activeKey={activeStatus}
-          onChange={(key) => setActiveStatus(key as OrderTab)}
-          palette="vendor"
-        />
-
-        {topMessages.map((message) => (
-          <Text key={message} style={styles.errorText}>{message}</Text>
-        ))}
-
-        {filteredOrders.length === 0 ? <Text style={styles.emptyText}>No orders in this tab.</Text> : null}
-
-        {visibleOrders.map((order) => {
-          const isQuickRequest = order.order_channel === 'office_quick_request';
-          const isPrintOrder = order.order_channel === 'print' || !!order.print_order;
-          const nextStatuses = getVisibleTransitions(order.status, order.allowed_transitions).filter(
-            (status) => !(isQuickRequest && status === 'delivered'),
-          );
-
-          return (
-            <View
-              key={order.id}
-              style={[
-                styles.orderCard,
-                highlightedOrderId === order.id ? styles.highlightedOrderCard : null,
-              ]}
-            >
-              <View style={styles.rowBetween}>
-                <Text style={styles.orderId}>{order.order_no}</Text>
-                <StatusBadge label={statusLabelForOrder(order.status)} tone={toneForStatus(order.status)} />
-              </View>
-
-              <View style={styles.metaRow}>
-                <Ionicons name="call-outline" size={15} color="#8b8b95" />
-                <Pressable
-                  accessibilityLabel={order.customer_mobile ? `Call customer at ${order.customer_mobile}` : undefined}
-                  accessibilityRole="link"
-                  disabled={!order.customer_mobile}
-                  hitSlop={8}
-                  onPress={() => {
-                    void handleCallCustomer(order.customer_mobile);
-                  }}
-                >
-                  <Text style={[styles.metaText, order.customer_mobile ? styles.callText : null]}>
-                    {order.customer_mobile ?? '--'}
-                  </Text>
-                </Pressable>
-                <View style={styles.dotSpacer} />
-                <Ionicons name="time-outline" size={15} color="#b3b3bc" />
-                <Text style={styles.timeText}>{formatRelativeTime(order.placed_at)}</Text>
-              </View>
-
-              <Text style={styles.customerText}>{order.customer_name ?? 'Customer'}</Text>
-
-              {isQuickRequest ? (
-                <View style={styles.quickRequestBadge}>
-                  <Text style={styles.quickRequestBadgeText}>
-                    Quick Request{order.quick_request?.requested_label ? ` • ${order.quick_request.requested_label}` : ''}
-                  </Text>
-                </View>
-              ) : null}
-
-              {isPrintOrder ? (
-                <PrintOrderFiles
-                  order={order}
-                  activeActionKey={fileActionKey}
-                  onFileAction={(file, action) => {
-                    void handlePrintFileAction(order.id, file, action);
-                  }}
-                />
-              ) : (
-                <View style={styles.itemsWrap}>
-                  {order.items.length > 0 ? (
-                  order.items.map((item) => (
-                    <Text key={`${order.id}-${item.id}-${item.title}`} style={styles.itemText}>
-                      • {item.title} x{item.qty}
-                    </Text>
-                  ))
-                  ) : isQuickRequest ? (
-                    <Text style={styles.itemText}>
-                      • Requested: {order.quick_request?.requested_label ?? 'Tea / Coffee'}
-                    </Text>
-                  ) : null}
-                </View>
-              )}
-
-              <View style={styles.locationRow}>
-                <Ionicons name="location-outline" size={15} color={tokens.colors.vendorPrimary} />
-                <Text style={styles.locationText}>{buildVendorOrderLocation(order)}</Text>
-              </View>
-
-              {order.notes ? (
-                <View style={styles.noteWrap}>
-                  <Text style={styles.noteLabel}>Customer note</Text>
-                  <Text style={styles.noteText}>{order.notes}</Text>
-                </View>
-              ) : null}
-
-              {order.status === 'cancelled' && order.cancel_reason ? (
-                <View style={styles.cancelReasonWrap}>
-                  <Text style={styles.cancelReasonLabel}>Cancel reason</Text>
-                  <Text style={styles.cancelReasonText}>{order.cancel_reason}</Text>
-                </View>
-              ) : null}
-
-              <View style={styles.totalRow}>
-                <Text style={styles.totalLabel}>Total</Text>
-                <Text style={[styles.totalValue, order.status === 'cancelled' ? styles.totalCancelled : null]}>
-                  {isQuickRequest && order.quick_request?.payment_pending
-                    ? 'Pending'
-                    : formatCurrency(order.total)}
-                </Text>
-              </View>
-
-              {isQuickRequest && order.quick_request?.payment_pending ? (
-                <Text style={styles.quickRequestHint}>
-                  Delivery partner will add tea or coffee counts and choose Office Wallet or COD at completion.
-                </Text>
-              ) : null}
-
-              {nextStatuses.length > 0 ? (
-                <View style={styles.actionsRow}>
-                  {nextStatuses.map((status) => {
-                    const key = `${order.id}:${status}`;
-                    return (
-                      <ActionButton
-                        key={key}
-                        label={labelForTransition(status)}
-                        tone={status === 'cancelled' ? 'danger' : status === 'delivered' ? 'success' : 'vendor'}
-                        style={styles.halfAction}
-                        disabled={updatingKey !== null}
-                        onPress={() => {
-                          if (status === 'cancelled') {
-                            openCancelReasonModal(order.id);
-                            return;
-                          }
-
-                          void handleStatusUpdate(order.id, status);
-                        }}
-                      />
-                    );
-                  })}
-                </View>
-              ) : null}
-            </View>
-          );
-        })}
-
-        {hasMoreOrders ? (
+        ListHeaderComponent={(
+          <View style={styles.listHeader}>
+            <SectionTitle title="Orders" subtitle="Manage current customer orders" />
+            <SegmentTabs
+              tabs={orderTabs.map((tab) => ({ key: tab.key, label: tab.label, count: orderCounts[tab.key] }))}
+              activeKey={activeStatus}
+              onChange={(key) => setActiveStatus(key as OrderTab)}
+              palette="vendor"
+            />
+            {topMessages.map((message) => (
+              <Text key={message} style={styles.errorText}>{message}</Text>
+            ))}
+            {filteredOrders.length === 0 && !ordersLoading ? (
+              <OrdersEmptyState status={activeStatus} />
+            ) : null}
+          </View>
+        )}
+        ItemSeparatorComponent={() => <View style={styles.orderSeparator} />}
+        renderItem={({ item: order }) => (
+          <OrderCard
+            order={order}
+            highlighted={highlightedOrderId === order.id}
+            updating={updatingKey !== null}
+            activeFileActionKey={fileActionKey}
+            onCallCustomer={handleCallCustomer}
+            onFileAction={handlePrintFileAction}
+            onCancel={openCancelReasonModal}
+            onCompleteQuickRequest={openQuickRequestModal}
+            onStatusUpdate={handleStatusUpdate}
+          />
+        )}
+        ListFooterComponent={hasMoreOrders ? (
           <Pressable
             style={styles.loadMoreButton}
+            disabled={ordersLoadingMoreTab !== null}
             onPress={() => {
-              setVisibleCounts((current) => ({
-                ...current,
-                [activeStatus]: current[activeStatus] + ORDER_PAGE_SIZE,
-              }));
+              void loadMoreOrders(activeStatus);
             }}
           >
-            <Text style={styles.loadMoreText}>Load 10 more</Text>
+            <Text style={styles.loadMoreText}>
+              {ordersLoadingMoreTab === activeStatus ? 'Loading...' : `Load ${ORDER_PAGE_SIZE} more`}
+            </Text>
             <Text style={styles.loadMoreMeta}>
-              Showing {visibleOrders.length} of {filteredOrders.length} orders
+              Showing {visibleOrders.length} of {orderCounts[activeStatus]} orders
             </Text>
           </Pressable>
         ) : null}
-
-      </ScrollView>
+      />
 
       <Modal
         visible={!!popupOrder}
@@ -543,46 +559,85 @@ export function VendorOrdersScreen({
           <Pressable style={StyleSheet.absoluteFill} onPress={closeOrderPopup} />
 
           {popupOrder ? (
-            <View style={[styles.newOrderSheet, { paddingBottom: modalBottomPadding }]}>
+            <View style={[
+              styles.newOrderSheet,
+              popupOrder.order_channel === 'office_quick_request' ? styles.quickRequestPopupSheet : null,
+              { paddingBottom: modalBottomPadding },
+            ]}>
               <View style={styles.popupHeader}>
                 <View style={styles.popupHeaderCopy}>
-                  <Text style={styles.popupTitle}>New Order</Text>
-                  <Text style={styles.popupSubtitle}>Respond quickly so the customer gets confirmation</Text>
+                  <Text style={styles.popupTitle}>
+                    {popupOrder.order_channel === 'office_quick_request' ? 'New Quick Request' : 'New Order'}
+                  </Text>
+                  <Text style={styles.popupSubtitle}>
+                    {popupOrder.order_channel === 'office_quick_request' && popupOrder.quick_request?.requested_label
+                      ? `${popupOrder.quick_request.requested_label} • Confirm and respond`
+                      : `${popupOrder.order_no} • Respond quickly`}
+                  </Text>
                 </View>
                 <Pressable style={styles.popupCloseButton} onPress={closeOrderPopup} disabled={!!updatingKey}>
                   <Ionicons name="close" size={20} color="#5f6470" />
                 </Pressable>
               </View>
 
-              <View style={styles.timerRow}>
-                <View style={styles.timerCircle}>
-                  <Text style={styles.timerText}>{popupSeconds}</Text>
-                </View>
-                <View style={styles.timerCopy}>
-                  <Text style={styles.timerLabel}>Time remaining</Text>
-                  <View style={styles.timerTrack}>
-                    <View
-                      style={[
-                        styles.timerFill,
-                        { width: `${Math.max(0, Math.min(100, (popupSeconds / 20) * 100))}%` },
-                      ]}
-                    />
+              <ScrollView
+                style={styles.popupBody}
+                contentContainerStyle={styles.popupBodyContent}
+                showsVerticalScrollIndicator={false}
+              >
+                <View style={styles.popupInfoCard}>
+                  <View style={styles.popupInfoRow}>
+                    <View style={styles.popupInfoIcon}>
+                      <Ionicons name="location" size={18} color={tokens.colors.vendorPrimary} />
+                    </View>
+                    <View style={styles.popupInfoCopy}>
+                      <Text style={styles.popupInfoLabel}>Deliver to</Text>
+                      <Text style={styles.popupAddressValue}>{buildVendorOrderLocation(popupOrder)}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.popupInfoSeparator} />
+                  <View style={styles.popupInfoRow}>
+                    <View style={styles.popupInfoIcon}>
+                      <Ionicons name="person-outline" size={17} color={tokens.colors.vendorPrimary} />
+                    </View>
+                    <View style={styles.popupInfoCopy}>
+                      <Text style={styles.popupInfoLabel}>Customer</Text>
+                      <Text style={styles.popupInfoValue}>{popupOrder.customer_name ?? 'Customer'}</Text>
+                    </View>
+                    {popupOrder.customer_mobile ? (
+                      <Pressable
+                        style={styles.popupCallButton}
+                        onPress={() => {
+                          void handleCallCustomer(popupOrder.customer_mobile);
+                        }}
+                      >
+                        <Ionicons name="call" size={17} color="#ffffff" />
+                      </Pressable>
+                    ) : null}
                   </View>
                 </View>
-              </View>
 
-              <View style={styles.popupDivider} />
+                <Text style={styles.popupSectionTitle}>
+                  {popupOrder.order_channel === 'office_quick_request' ? 'Request details' : 'Order items'}
+                </Text>
+                <PopupOrderItems order={popupOrder} />
 
-              <Text style={styles.popupSectionTitle}>Order Details</Text>
-              <PopupOrderItems order={popupOrder} />
+                <OrderPriceSummary order={popupOrder} mode="popup" />
 
-              <View style={styles.popupTotalBox}>
-                <Text style={styles.popupTotalLabel}>Total Amount</Text>
-                <Text style={styles.popupTotalValue}>{formatCurrency(popupOrder.total)}</Text>
-              </View>
+                {popupOrder.notes ? (
+                  <View style={styles.popupNoteWrap}>
+                    <Ionicons name="chatbox-ellipses-outline" size={17} color="#b45309" />
+                    <View style={styles.popupInfoCopy}>
+                      <Text style={styles.popupNoteLabel}>Customer note</Text>
+                      <Text style={styles.popupNoteText}>{popupOrder.notes}</Text>
+                    </View>
+                  </View>
+                ) : null}
 
-              <Text style={styles.popupLocation}>{buildVendorOrderLocation(popupOrder)}</Text>
-              <Text style={styles.popupMeta}>{popupOrder.order_no} - {formatRelativeTime(popupOrder.placed_at)}</Text>
+                <Text style={styles.popupMeta}>
+                  {popupOrder.order_no} • {formatRelativeTime(popupOrder.placed_at)}
+                </Text>
+              </ScrollView>
 
               <View style={styles.popupActionsRow}>
                 <Pressable
@@ -611,6 +666,162 @@ export function VendorOrdersScreen({
             </View>
           ) : null}
         </View>
+      </Modal>
+
+      <Modal
+        visible={!!quickRequestTargetOrder}
+        animationType="slide"
+        transparent
+        onRequestClose={closeQuickRequestModal}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 18 : 0}
+        >
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeQuickRequestModal} />
+
+          <ScrollView
+            contentContainerStyle={styles.modalScrollContent}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={[styles.modalSheet, styles.quickRequestModalSheet, { paddingBottom: modalBottomPadding }]}>
+              <View style={styles.modalHeader}>
+                <View style={styles.modalTitleWrap}>
+                  <View style={styles.quickRequestModalIcon}>
+                    <Ionicons name="cafe-outline" size={20} color={tokens.colors.vendorPrimary} />
+                  </View>
+                  <View>
+                    <Text style={styles.modalTitle}>Complete Quick Request</Text>
+                    <Text style={styles.quickRequestModalSubtitle}>
+                      {quickRequestTargetOrder?.quick_request?.requested_label
+                        ? `Requested: ${quickRequestTargetOrder.quick_request.requested_label}`
+                        : 'Confirm the final served quantities'}
+                    </Text>
+                  </View>
+                </View>
+
+                <Pressable style={styles.closeModalButton} onPress={closeQuickRequestModal} disabled={!!updatingKey}>
+                  <Ionicons name="close" size={18} color="#7f7f89" />
+                </Pressable>
+              </View>
+
+              <View style={styles.quickRequestInfoCard}>
+                <Ionicons name="location-outline" size={18} color="#a45a20" />
+                <View style={styles.quickRequestInfoCopy}>
+                  <Text style={styles.quickRequestInfoLabel}>Deliver to</Text>
+                  <Text style={styles.quickRequestInfoValue}>
+                    {quickRequestTargetOrder ? buildVendorOrderLocation(quickRequestTargetOrder) : '--'}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.quickRequestRow}>
+                <View style={styles.quickRequestField}>
+                  <QuantityStepper
+                    label={`Tea • ${formatCurrency(quickRequestTargetOrder?.quick_request?.tea_price ?? 0)}`}
+                    value={quickRequestTeaQty}
+                    onChange={(value) => {
+                      setQuickRequestTeaQty(value);
+                      setQuickRequestError(null);
+                    }}
+                    tone="vendor"
+                  />
+                </View>
+
+                <View style={styles.quickRequestField}>
+                  <QuantityStepper
+                    label={`Coffee • ${formatCurrency(quickRequestTargetOrder?.quick_request?.coffee_price ?? 0)}`}
+                    value={quickRequestCoffeeQty}
+                    onChange={(value) => {
+                      setQuickRequestCoffeeQty(value);
+                      setQuickRequestError(null);
+                    }}
+                    tone="vendor"
+                  />
+                </View>
+              </View>
+
+              <View style={styles.quickRequestPreviewCard}>
+                <View>
+                  <Text style={styles.quickRequestPreviewLabel}>Final amount</Text>
+                  <Text style={styles.quickRequestPreviewHint}>Based on quantities served</Text>
+                </View>
+                <Text style={styles.quickRequestPreviewValue}>{formatCurrency(quickRequestTotalPreview)}</Text>
+              </View>
+
+              <View style={styles.paymentOptionsWrap}>
+                <Text style={styles.quickRequestLabel}>Payment method</Text>
+                <View style={styles.paymentOptionsRow}>
+                  {quickRequestPaymentOptions.map((option) => (
+                    <Pressable
+                      key={option.key}
+                      disabled={!option.enabled}
+                      style={[
+                        styles.paymentOption,
+                        quickRequestPaymentMethod === option.key ? styles.paymentOptionActive : null,
+                        !option.enabled ? styles.paymentOptionDisabled : null,
+                      ]}
+                      onPress={() => setQuickRequestPaymentMethod(option.key)}
+                    >
+                      <Ionicons
+                        name={option.key === 'cod' ? 'cash-outline' : 'wallet-outline'}
+                        size={16}
+                        color={quickRequestPaymentMethod === option.key ? tokens.colors.vendorPrimary : '#777782'}
+                      />
+                      <Text style={[
+                        styles.paymentOptionText,
+                        quickRequestPaymentMethod === option.key ? styles.paymentOptionTextActive : null,
+                      ]}>
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                {quickRequestPaymentOptions
+                  .filter((option) => option.key !== 'cod' && typeof option.balance === 'number')
+                  .map((option) => (
+                    <Text key={`${option.key}-balance`} style={styles.paymentHintText}>
+                      {option.label}: {formatCurrency(option.balance ?? 0)}
+                      {option.key === 'office_wallet' && option.creditEnabled
+                        ? ' • Credit enabled'
+                        : !option.enabled && quickRequestTotalPreview > 0
+                          ? ' • Insufficient balance'
+                          : ''}
+                    </Text>
+                  ))}
+              </View>
+
+              {quickRequestError ? <Text style={styles.errorText}>{quickRequestError}</Text> : null}
+
+              <View style={styles.modalActionsRow}>
+                <ActionButton
+                  label="Back"
+                  tone="muted"
+                  style={styles.halfAction}
+                  disabled={!!updatingKey}
+                  onPress={closeQuickRequestModal}
+                />
+                <ActionButton
+                  label={
+                    updatingKey === `${quickRequestTargetOrder?.id}:quick-request-complete`
+                      ? 'Completing...'
+                      : 'Complete & Save'
+                  }
+                  tone="success"
+                  style={styles.halfAction}
+                  disabled={!!updatingKey}
+                  onPress={() => {
+                    void submitQuickRequestCompletion();
+                  }}
+                />
+              </View>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal
@@ -690,6 +901,149 @@ export function VendorOrdersScreen({
   );
 }
 
+const OrderCard = React.memo(function OrderCard({
+  order,
+  highlighted,
+  updating,
+  activeFileActionKey,
+  onCallCustomer,
+  onFileAction,
+  onCancel,
+  onCompleteQuickRequest,
+  onStatusUpdate,
+}: {
+  order: VendorOrder;
+  highlighted: boolean;
+  updating: boolean;
+  activeFileActionKey: string | null;
+  onCallCustomer: (phoneNumber: string | null) => Promise<void>;
+  onFileAction: (orderId: number, file: PrintOrderFile, action: 'download' | 'share') => Promise<void>;
+  onCancel: (orderId: number) => void;
+  onCompleteQuickRequest: (order: VendorOrder) => void;
+  onStatusUpdate: (orderId: number, status: OrderStatus) => Promise<void>;
+}) {
+  const isQuickRequest = order.order_channel === 'office_quick_request';
+  const isPrintOrder = order.order_channel === 'print' || !!order.print_order;
+  const nextStatuses = getVisibleTransitions(order.status, order.allowed_transitions);
+
+  return (
+    <View style={[
+      styles.orderCard,
+      isQuickRequest ? styles.quickRequestOrderCard : null,
+      highlighted ? styles.highlightedOrderCard : null,
+    ]}>
+      <View style={styles.rowBetween}>
+        <View style={styles.orderPrimaryCopy}>
+          <Text style={styles.customerPrimaryText}>{order.customer_name ?? 'Customer'}</Text>
+          <Text style={styles.orderReference}>{order.order_no}</Text>
+        </View>
+        <StatusBadge label={statusLabelForOrder(order.status)} tone={toneForStatus(order.status)} />
+      </View>
+
+      <View style={styles.metaRow}>
+        <Ionicons name="call-outline" size={15} color="#8b8b95" />
+        <Pressable
+          accessibilityLabel={order.customer_mobile ? `Call customer at ${order.customer_mobile}` : undefined}
+          accessibilityRole="link"
+          disabled={!order.customer_mobile}
+          hitSlop={8}
+          onPress={() => {
+            void onCallCustomer(order.customer_mobile);
+          }}
+        >
+          <Text style={[styles.metaText, order.customer_mobile ? styles.callText : null]}>
+            {order.customer_mobile ?? '--'}
+          </Text>
+        </Pressable>
+        <View style={styles.dotSpacer} />
+        <Ionicons name="time-outline" size={15} color="#b3b3bc" />
+        <Text style={styles.timeText}>{formatRelativeTime(order.placed_at)}</Text>
+      </View>
+
+      <View style={styles.deliveryAddressCard}>
+        <View style={styles.deliveryAddressIcon}>
+          <Ionicons name="location" size={17} color={tokens.colors.vendorPrimary} />
+        </View>
+        <View style={styles.deliveryAddressCopy}>
+          <Text style={styles.deliveryAddressLabel}>Deliver to</Text>
+          <Text style={styles.deliveryAddressText}>{buildVendorOrderLocation(order)}</Text>
+        </View>
+      </View>
+
+      {isQuickRequest ? (
+        <View style={styles.quickRequestBadge}>
+          <Text style={styles.quickRequestBadgeText}>
+            Quick Request{order.quick_request?.requested_label ? ` • ${order.quick_request.requested_label}` : ''}
+          </Text>
+        </View>
+      ) : null}
+
+      {isPrintOrder ? (
+        <PrintOrderFiles
+          order={order}
+          activeActionKey={activeFileActionKey}
+          onFileAction={(file, action) => {
+            void onFileAction(order.id, file, action);
+          }}
+        />
+      ) : (
+        <OrderItemsTable order={order} />
+      )}
+
+      {order.notes ? (
+        <View style={styles.noteWrap}>
+          <Text style={styles.noteLabel}>Customer note</Text>
+          <Text style={styles.noteText}>{order.notes}</Text>
+        </View>
+      ) : null}
+
+      {order.status === 'cancelled' && order.cancel_reason ? (
+        <View style={styles.cancelReasonWrap}>
+          <Text style={styles.cancelReasonLabel}>Cancel reason</Text>
+          <Text style={styles.cancelReasonText}>{order.cancel_reason}</Text>
+        </View>
+      ) : null}
+
+      <OrderPriceSummary order={order} mode="card" />
+
+      {isQuickRequest && order.quick_request?.payment_pending ? (
+        <Text style={styles.quickRequestHint}>
+          Vendor or delivery partner can confirm Tea/Coffee quantities and payment at completion.
+        </Text>
+      ) : null}
+
+      {nextStatuses.length > 0 ? (
+        <View style={styles.actionsRow}>
+          {nextStatuses.map((status) => (
+            <ActionButton
+              key={`${order.id}:${status}`}
+              label={isQuickRequest && status === 'delivered' ? 'Complete Quick Request' : labelForTransition(status)}
+              tone={status === 'cancelled' ? 'danger' : status === 'delivered' ? 'success' : 'vendor'}
+              style={[styles.halfAction, isQuickRequest ? styles.quickRequestActionButton : null]}
+              labelStyle={isQuickRequest && status === 'delivered' ? styles.quickRequestCompleteButtonLabel : null}
+              labelNumberOfLines={isQuickRequest && status === 'delivered' ? 2 : 1}
+              disabled={updating}
+              onPress={() => {
+                if (isQuickRequest && status === 'delivered') {
+                  onCompleteQuickRequest(order);
+                  return;
+                }
+
+                if (status === 'cancelled') {
+                  onCancel(order.id);
+                  return;
+                }
+
+                void onStatusUpdate(order.id, status);
+              }}
+            />
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+});
+
 function PopupOrderItems({ order }: { order: VendorOrder }) {
   if (order.print_order) {
     return (
@@ -712,24 +1066,153 @@ function PopupOrderItems({ order }: { order: VendorOrder }) {
   }
 
   if (order.items.length === 0 && order.quick_request) {
+    const requestedType = order.quick_request.requested_type?.trim().toLowerCase();
+    const priceRows = [
+      requestedType !== 'coffee'
+        ? { key: 'tea', label: 'Tea', price: order.quick_request.tea_price }
+        : null,
+      requestedType !== 'tea'
+        ? { key: 'coffee', label: 'Coffee', price: order.quick_request.coffee_price }
+        : null,
+    ].filter((entry): entry is { key: string; label: string; price: number } => entry !== null);
+
     return (
-      <View style={styles.popupItemRow}>
-        <Text style={styles.popupItemText}>{order.quick_request.requested_label ?? 'Tea / Coffee'}</Text>
-        <Text style={styles.popupQty}>x1</Text>
+      <View style={[styles.popupItemsCard, styles.quickRequestPopupItemsCard]}>
+        <View style={styles.quickRequestPopupLabelRow}>
+          <Ionicons name="flash" size={14} color={tokens.colors.vendorPrimary} />
+          <Text style={styles.quickRequestPopupLabel}>
+            {order.quick_request.requested_label ?? 'Tea / Coffee'}
+          </Text>
+        </View>
+        {priceRows.map((entry, index) => (
+          <View key={entry.key}>
+            <View style={styles.popupItemRow}>
+              <View style={styles.popupItemCopy}>
+                <Text style={styles.popupItemText}>{entry.label}</Text>
+                <Text style={styles.popupItemMeta}>Quantity confirmed after acceptance</Text>
+              </View>
+              <Text style={styles.popupItemPrice}>{formatCurrency(entry.price)} each</Text>
+            </View>
+            {index < priceRows.length - 1 ? <View style={styles.popupItemSeparator} /> : null}
+          </View>
+        ))}
       </View>
     );
   }
 
   return (
-    <View style={styles.popupItemsList}>
-      {order.items.map((item) => (
-        <View key={`${order.id}-popup-${item.id}-${item.title}`} style={styles.popupItemRow}>
-          <Text style={styles.popupItemText}>{item.title}</Text>
-          <Text style={styles.popupQty}>x{item.qty}</Text>
+    <View style={styles.popupItemsCard}>
+      {order.items.map((item, index) => (
+        <View key={`${order.id}-popup-${item.id}-${item.title}`}>
+          <View style={styles.popupItemRow}>
+            <View style={styles.popupItemCopy}>
+              <Text style={styles.popupItemText}>{item.title}</Text>
+              {item.variant_name ? <Text style={styles.popupVariantText}>{item.variant_name}</Text> : null}
+              <Text style={styles.popupItemMeta}>
+                {item.qty} × {formatCurrency(item.unit_price)}
+              </Text>
+            </View>
+            <Text style={styles.popupItemPrice}>{formatCurrency(item.line_total)}</Text>
+          </View>
+          {index < order.items.length - 1 ? <View style={styles.popupItemSeparator} /> : null}
         </View>
       ))}
     </View>
   );
+}
+
+function OrderItemsTable({ order }: { order: VendorOrder }) {
+  if (order.items.length === 0 && order.quick_request) {
+    return (
+      <View style={styles.itemsWrap}>
+        <Text style={styles.itemTitle}>Requested: {order.quick_request.requested_label ?? 'Tea / Coffee'}</Text>
+        <Text style={styles.itemCalculation}>Price and quantity will be added at completion</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.itemsWrap}>
+      {order.items.map((item, index) => (
+        <View key={`${order.id}-${item.id}-${item.title}`}>
+          <View style={styles.itemRow}>
+            <View style={styles.itemCopy}>
+              <Text style={styles.itemTitle}>{item.title}</Text>
+              {item.variant_name ? <Text style={styles.itemVariant}>{item.variant_name}</Text> : null}
+              <Text style={styles.itemCalculation}>{item.qty} × {formatCurrency(item.unit_price)}</Text>
+            </View>
+            <Text style={styles.itemLineTotal}>{formatCurrency(item.line_total)}</Text>
+          </View>
+          {index < order.items.length - 1 ? <View style={styles.itemSeparator} /> : null}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function OrderPriceSummary({ order, mode }: { order: VendorOrder; mode: 'card' | 'popup' }) {
+  const paymentPending = order.order_channel === 'office_quick_request' && order.quick_request?.payment_pending;
+  const paymentLabel = formatPaymentMethod(order.payment_method ?? order.quick_request?.payment_method ?? null);
+  const popup = mode === 'popup';
+
+  if (paymentPending) {
+    return (
+      <View style={popup ? styles.popupPriceSummary : styles.cardPriceSummary}>
+        <View style={styles.priceTotalRow}>
+          <Text style={styles.priceTotalLabel}>Total</Text>
+          <Text style={styles.pricePendingValue}>Pending</Text>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={popup ? styles.popupPriceSummary : styles.cardPriceSummary}>
+      <View style={styles.priceRow}>
+        <Text style={styles.priceLabel}>Items subtotal</Text>
+        <Text style={styles.priceValue}>{formatCurrency(order.subtotal)}</Text>
+      </View>
+      <View style={styles.priceRow}>
+        <Text style={styles.priceLabel}>Delivery fee</Text>
+        <Text style={styles.priceValue}>{order.delivery_fee > 0 ? formatCurrency(order.delivery_fee) : 'Free'}</Text>
+      </View>
+      <View style={styles.priceDivider} />
+      <View style={styles.priceTotalRow}>
+        <Text style={styles.priceTotalLabel}>Total</Text>
+        <Text style={[
+          styles.priceTotalValue,
+          order.status === 'cancelled' ? styles.totalCancelled : null,
+        ]}>
+          {formatCurrency(order.total)}
+        </Text>
+      </View>
+      {paymentLabel ? (
+        <View style={styles.paymentRow}>
+          <Ionicons name="wallet-outline" size={14} color="#6b7280" />
+          <Text style={styles.paymentText}>Payment: {paymentLabel}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function formatPaymentMethod(paymentMethod: string | null): string | null {
+  if (!paymentMethod) {
+    return null;
+  }
+
+  const normalized = paymentMethod.trim().toLowerCase();
+  const knownLabels: Record<string, string> = {
+    cod: 'Cash on delivery',
+    cash: 'Cash',
+    cash_on_delivery: 'Cash on delivery',
+    office_wallet: 'Office Wallet',
+    wallet: 'Customer Wallet',
+    online: 'Online',
+  };
+
+  return knownLabels[normalized]
+    ?? normalized.split('_').filter(Boolean).map((part) => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`).join(' ');
 }
 
 function PrintOrderFiles({
@@ -878,6 +1361,114 @@ function labelForTransition(status: OrderStatus): string {
   }
 }
 
+const emptyStateContent: Record<OrderTab, {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  iconColor: string;
+  backgroundColor: string;
+  borderColor: string;
+  shadowColor: string;
+  badge: string;
+  badgeBackground: string;
+  title: string;
+  subtitle: string;
+}> = {
+  pending: {
+    icon: 'restaurant-outline',
+    iconColor: tokens.colors.vendorPrimary,
+    backgroundColor: '#fff1e6',
+    borderColor: '#ffd8bc',
+    shadowColor: '#d96b1b',
+    badge: 'Zzz',
+    badgeBackground: tokens.colors.vendorPrimary,
+    title: 'Kitchen’s catching its breath.',
+    subtitle: 'No pending orders right now. Enjoy the calm before the next ding!',
+  },
+  completed: {
+    icon: 'checkmark-done-outline',
+    iconColor: '#16844b',
+    backgroundColor: '#ebf8f0',
+    borderColor: '#c8ead6',
+    shadowColor: '#16844b',
+    badge: '★',
+    badgeBackground: '#16844b',
+    title: 'No victory plates yet.',
+    subtitle: 'Completed orders will appear here once the kitchen gets moving.',
+  },
+  cancelled: {
+    icon: 'shield-checkmark-outline',
+    iconColor: '#4d6f8f',
+    backgroundColor: '#eef5fa',
+    borderColor: '#d1e1ec',
+    shadowColor: '#4d6f8f',
+    badge: 'All good',
+    badgeBackground: '#4d6f8f',
+    title: 'No order heartbreaks here.',
+    subtitle: 'No cancellations right now. Let’s keep the good streak going!',
+  },
+};
+
+function OrdersEmptyState({ status }: { status: OrderTab }) {
+  const floatAnimation = useRef(new Animated.Value(0)).current;
+  const content = emptyStateContent[status];
+
+  useEffect(() => {
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(floatAnimation, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(floatAnimation, {
+          toValue: 0,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.delay(450),
+      ]),
+    );
+
+    animation.start();
+    return () => animation.stop();
+  }, [floatAnimation]);
+
+  return (
+    <View style={styles.pendingEmptyState} accessibilityRole="text">
+      <Animated.View
+        style={[
+          styles.pendingEmptyIconWrap,
+          {
+            backgroundColor: content.backgroundColor,
+            borderColor: content.borderColor,
+            shadowColor: content.shadowColor,
+          },
+          {
+            transform: [{
+              translateY: floatAnimation.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, -5],
+              }),
+            }],
+          },
+        ]}
+      >
+        <Ionicons name={content.icon} size={38} color={content.iconColor} />
+        <View style={[styles.pendingEmptySleepBadge, { backgroundColor: content.badgeBackground }]}>
+          <Text style={styles.pendingEmptySleepText}>{content.badge}</Text>
+        </View>
+      </Animated.View>
+      <Text style={styles.pendingEmptyTitle}>{content.title}</Text>
+      <Text style={styles.pendingEmptySubtitle}>{content.subtitle}</Text>
+    </View>
+  );
+}
+
+function roundCurrency(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 const styles = StyleSheet.create({
   root: {
     flex: 1,
@@ -886,18 +1477,73 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 20,
+  },
+  listHeader: {
     gap: 12,
+    marginBottom: 12,
+  },
+  orderSeparator: {
+    height: 12,
   },
   errorText: {
     color: tokens.colors.danger,
     fontSize: 13,
     fontWeight: '700',
   },
-  emptyText: {
-    color: '#8b8b95',
+  pendingEmptyState: {
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 38,
+    paddingBottom: 26,
+  },
+  pendingEmptyIconWrap: {
+    width: 92,
+    height: 92,
+    borderRadius: 30,
+    backgroundColor: '#fff1e6',
+    borderWidth: 1,
+    borderColor: '#ffd8bc',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#d96b1b',
+    shadowOpacity: 0.13,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 3,
+  },
+  pendingEmptySleepBadge: {
+    position: 'absolute',
+    right: -8,
+    top: -8,
+    minWidth: 42,
+    height: 28,
+    borderRadius: 14,
+    paddingHorizontal: 8,
+    backgroundColor: tokens.colors.vendorPrimary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pendingEmptySleepText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 0.4,
+  },
+  pendingEmptyTitle: {
+    color: '#252631',
+    fontSize: 19,
+    fontWeight: '900',
+    textAlign: 'center',
+    marginTop: 20,
+  },
+  pendingEmptySubtitle: {
+    maxWidth: 300,
+    color: '#7f808a',
     fontSize: 13,
     fontWeight: '600',
-    marginTop: 8,
+    lineHeight: 19,
+    textAlign: 'center',
+    marginTop: 7,
   },
   loadMoreButton: {
     alignItems: 'center',
@@ -908,6 +1554,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     gap: 4,
+    marginTop: 12,
   },
   loadMoreText: {
     color: tokens.colors.vendorPrimary,
@@ -927,6 +1574,11 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 9,
   },
+  quickRequestOrderCard: {
+    backgroundColor: '#fffaf0',
+    borderColor: '#f2c98b',
+    borderWidth: 1.5,
+  },
   highlightedOrderCard: {
     borderColor: '#ffd0ad',
     backgroundColor: '#fff7f0',
@@ -937,11 +1589,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  orderId: {
-    color: '#232328',
-    fontSize: 20,
-    fontWeight: '900',
+  orderPrimaryCopy: {
     flex: 1,
+    minWidth: 0,
+  },
+  customerPrimaryText: {
+    color: '#232328',
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  orderReference: {
+    color: '#92929c',
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 2,
   },
   metaRow: {
     flexDirection: 'row',
@@ -965,10 +1626,41 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  customerText: {
-    color: '#4a4a53',
+  deliveryAddressCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#ffd9bc',
+    backgroundColor: '#fff7f0',
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+  },
+  deliveryAddressIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: '#ffe8d6',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deliveryAddressCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  deliveryAddressLabel: {
+    color: '#a75b20',
+    fontSize: 10,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  deliveryAddressText: {
+    color: '#3f3f46',
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '800',
+    marginTop: 2,
   },
   quickRequestBadge: {
     alignSelf: 'flex-start',
@@ -1121,28 +1813,48 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   itemsWrap: {
-    borderRadius: 12,
-    backgroundColor: '#f1f1f4',
+    borderRadius: 14,
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#ececf2',
-    padding: 10,
-    gap: 3,
+    borderColor: '#e8e8ee',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
   },
-  itemText: {
-    color: '#4a4a53',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  locationRow: {
+  itemRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 12,
+    paddingVertical: 10,
   },
-  locationText: {
-    color: '#66666f',
-    fontSize: 13,
-    fontWeight: '600',
+  itemCopy: {
     flex: 1,
+    minWidth: 0,
+  },
+  itemTitle: {
+    color: '#28282e',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  itemVariant: {
+    color: tokens.colors.vendorPrimary,
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  itemCalculation: {
+    color: '#888892',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 3,
+  },
+  itemLineTotal: {
+    color: '#28282e',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  itemSeparator: {
+    height: 1,
+    backgroundColor: '#eeeeF2',
   },
   noteWrap: {
     backgroundColor: '#fff7e8',
@@ -1186,20 +1898,72 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     lineHeight: 17,
   },
-  totalRow: {
+  cardPriceSummary: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e8e8ee',
+    backgroundColor: '#ffffff',
+    padding: 12,
+    gap: 7,
+  },
+  popupPriceSummary: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#ffd8b8',
+    backgroundColor: '#fff8f2',
+    padding: 14,
+    gap: 8,
+  },
+  priceRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  totalLabel: {
+  priceLabel: {
     color: '#8b8b95',
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 12,
+    fontWeight: '700',
   },
-  totalValue: {
-    color: '#212127',
-    fontSize: 20,
+  priceValue: {
+    color: '#4f4f58',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  priceDivider: {
+    height: 1,
+    backgroundColor: '#ececf1',
+    marginVertical: 2,
+  },
+  priceTotalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  priceTotalLabel: {
+    color: '#28282e',
+    fontSize: 15,
     fontWeight: '900',
+  },
+  priceTotalValue: {
+    color: '#1f2025',
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  pricePendingValue: {
+    color: '#c66a1d',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  paymentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 2,
+  },
+  paymentText: {
+    color: '#6b7280',
+    fontSize: 11,
+    fontWeight: '700',
   },
   totalCancelled: {
     color: '#b6b6be',
@@ -1248,6 +2012,16 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 140,
   },
+  quickRequestActionButton: {
+    height: 54,
+    paddingHorizontal: 12,
+  },
+  quickRequestCompleteButtonLabel: {
+    fontSize: 16,
+    lineHeight: 18,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
   popupOverlay: {
     flex: 1,
     backgroundColor: 'rgba(7,12,24,0.38)',
@@ -1265,6 +2039,12 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 8 },
     elevation: 8,
+    maxHeight: '92%',
+  },
+  quickRequestPopupSheet: {
+    backgroundColor: '#fffdf9',
+    borderWidth: 2,
+    borderColor: '#ffc995',
   },
   popupHeader: {
     flexDirection: 'row',
@@ -1278,7 +2058,7 @@ const styles = StyleSheet.create({
   },
   popupTitle: {
     color: '#111827',
-    fontSize: 28,
+    fontSize: 25,
     fontWeight: '900',
   },
   popupSubtitle: {
@@ -1289,43 +2069,36 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   popupCloseButton: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#f1f2f7',
     alignItems: 'center',
     justifyContent: 'center',
   },
   timerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
-  },
-  timerCircle: {
-    width: 86,
-    height: 86,
-    borderRadius: 43,
-    borderWidth: 5,
-    borderColor: '#f6ad1b',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  timerText: {
-    color: '#f6a800',
-    fontSize: 32,
-    fontWeight: '900',
+    borderRadius: 14,
+    backgroundColor: '#fff8e8',
+    borderWidth: 1,
+    borderColor: '#ffe3a3',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
   timerCopy: {
-    flex: 1,
-    gap: 12,
+    gap: 8,
+  },
+  timerLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   timerLabel: {
-    color: '#7b8190',
-    fontSize: 15,
-    fontWeight: '900',
+    color: '#b45309',
+    fontSize: 13,
+    fontWeight: '800',
   },
   timerTrack: {
-    height: 9,
+    height: 6,
     borderRadius: 999,
     backgroundColor: '#ffe5a3',
     overflow: 'hidden',
@@ -1335,69 +2108,168 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: '#f6ad1b',
   },
-  popupDivider: {
-    height: 1,
-    backgroundColor: '#e7e9ef',
+  popupBody: {
+    flexShrink: 1,
+  },
+  popupBodyContent: {
+    gap: 12,
+    paddingBottom: 2,
   },
   popupSectionTitle: {
     color: '#111827',
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: '900',
   },
   popupItemsList: {
     gap: 8,
   },
+  popupItemsCard: {
+    borderRadius: 16,
+    backgroundColor: '#f8f8fa',
+    borderWidth: 1,
+    borderColor: '#e9e9ef',
+    paddingHorizontal: 12,
+    paddingVertical: 2,
+  },
+  quickRequestPopupItemsCard: {
+    backgroundColor: '#fff8ef',
+    borderColor: '#ffd6af',
+    paddingTop: 10,
+  },
+  quickRequestPopupLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingBottom: 4,
+  },
+  quickRequestPopupLabel: {
+    color: tokens.colors.vendorPrimary,
+    fontSize: 12,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
   popupItemRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 10,
+    gap: 12,
+    paddingVertical: 11,
+  },
+  popupItemCopy: {
+    flex: 1,
+    minWidth: 0,
   },
   popupItemText: {
-    flex: 1,
     color: '#111827',
-    fontSize: 18,
+    fontSize: 15,
     fontWeight: '900',
   },
-  popupQty: {
-    overflow: 'hidden',
-    borderRadius: 12,
-    backgroundColor: '#f1f2f7',
+  popupVariantText: {
+    color: tokens.colors.vendorPrimary,
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  popupItemMeta: {
     color: '#7b8190',
-    fontSize: 16,
-    fontWeight: '900',
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 4,
   },
-  popupTotalBox: {
+  popupItemPrice: {
+    color: '#111827',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  popupItemSeparator: {
+    height: 1,
+    backgroundColor: '#e5e7eb',
+  },
+  popupInfoCard: {
     borderRadius: 16,
-    backgroundColor: '#fff1a8',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e7e7ed',
+    padding: 12,
+    gap: 10,
+  },
+  popupInfoRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
+    gap: 10,
   },
-  popupTotalLabel: {
-    color: '#111827',
-    fontSize: 16,
+  popupInfoIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: '#fff1e7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  popupInfoCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  popupInfoLabel: {
+    color: '#8b8b95',
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  popupInfoValue: {
+    color: '#303038',
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  popupAddressValue: {
+    color: '#27272d',
+    fontSize: 15,
+    fontWeight: '900',
+    lineHeight: 20,
+    marginTop: 2,
+  },
+  popupCallButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: tokens.colors.vendorPrimary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  popupInfoSeparator: {
+    height: 1,
+    backgroundColor: '#ededf1',
+  },
+  popupNoteWrap: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 9,
+    borderRadius: 14,
+    backgroundColor: '#fff8e8',
+    borderWidth: 1,
+    borderColor: '#ffe1aa',
+    padding: 11,
+  },
+  popupNoteLabel: {
+    color: '#b45309',
+    fontSize: 11,
     fontWeight: '900',
   },
-  popupTotalValue: {
-    color: '#111827',
-    fontSize: 32,
-    fontWeight: '900',
-  },
-  popupLocation: {
-    color: '#7b8190',
-    fontSize: 14,
-    fontWeight: '900',
+  popupNoteText: {
+    color: '#795628',
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 17,
+    marginTop: 2,
   },
   popupMeta: {
     color: '#7b8190',
-    fontSize: 13,
-    fontWeight: '900',
+    fontSize: 11,
+    fontWeight: '800',
+    textAlign: 'center',
   },
   popupActionsRow: {
     flexDirection: 'row',
@@ -1405,8 +2277,8 @@ const styles = StyleSheet.create({
   },
   popupActionButton: {
     flex: 1,
-    minHeight: 72,
-    borderRadius: 18,
+    minHeight: 56,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1420,12 +2292,12 @@ const styles = StyleSheet.create({
   },
   popupRejectText: {
     color: '#d93743',
-    fontSize: 20,
+    fontSize: 17,
     fontWeight: '900',
   },
   popupAcceptText: {
     color: '#ffffff',
-    fontSize: 20,
+    fontSize: 17,
     fontWeight: '900',
   },
   modalOverlay: {
@@ -1448,6 +2320,10 @@ const styles = StyleSheet.create({
     gap: 12,
     maxHeight: '88%',
   },
+  quickRequestModalSheet: {
+    backgroundColor: '#fffdf9',
+    borderColor: '#f2d4ad',
+  },
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1463,6 +2339,20 @@ const styles = StyleSheet.create({
     color: '#222329',
     fontSize: 20,
     fontWeight: '900',
+  },
+  quickRequestModalIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: '#fff0e4',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickRequestModalSubtitle: {
+    color: '#8a6a50',
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 1,
   },
   closeModalButton: {
     width: 34,
@@ -1487,6 +2377,115 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     color: '#232328',
     fontSize: 15,
+    fontWeight: '600',
+  },
+  quickRequestInfoCard: {
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: '#f2d4ad',
+    backgroundColor: '#fff7ed',
+    padding: 11,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+  },
+  quickRequestInfoCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  quickRequestInfoLabel: {
+    color: '#a45a20',
+    fontSize: 10,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  quickRequestInfoValue: {
+    color: '#34343b',
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  quickRequestRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  quickRequestField: {
+    flex: 1,
+  },
+  quickRequestLabel: {
+    color: '#5f5f69',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  quickRequestPreviewCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#f2d4ad',
+    backgroundColor: '#fff7ed',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  quickRequestPreviewLabel: {
+    color: '#8a562f',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  quickRequestPreviewHint: {
+    color: '#9a7a61',
+    fontSize: 10,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  quickRequestPreviewValue: {
+    color: '#25252b',
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  paymentOptionsWrap: {
+    gap: 8,
+  },
+  paymentOptionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  paymentOption: {
+    minHeight: 42,
+    minWidth: 110,
+    flexGrow: 1,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e0e0e6',
+    backgroundColor: '#f5f5f7',
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  paymentOptionActive: {
+    borderColor: tokens.colors.vendorPrimary,
+    backgroundColor: '#fff0e4',
+  },
+  paymentOptionDisabled: {
+    opacity: 0.5,
+  },
+  paymentOptionText: {
+    color: '#71717b',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  paymentOptionTextActive: {
+    color: tokens.colors.vendorPrimary,
+  },
+  paymentHintText: {
+    color: '#7a7068',
+    fontSize: 11,
     fontWeight: '600',
   },
   modalActionsRow: {

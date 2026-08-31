@@ -71,6 +71,7 @@ function normalizeDeliveryOrderItem(entry: unknown): DeliveryOrderItem | null {
   return {
     id: toNumberValue(entry.id, 0),
     title: toStringValue(entry.title, 'Item'),
+    variant_name: toNullableString(entry.variant_name),
     qty: toNumberValue(entry.qty, 1),
     unit_price: toNumberValue(entry.unit_price, 0),
     line_total: toNumberValue(entry.line_total, 0),
@@ -153,6 +154,17 @@ function normalizeBuilding(entry: unknown): Building | null {
     floors_count: toNumberValue(entry.floors_count, 0),
     menu_items_count: toNumberValue(entry.menu_items_count, 0),
     orders_count: toNumberValue(entry.orders_count, 0),
+    default_delivery_charge: 0,
+    delivery_charge_override: null,
+    effective_delivery_charge: 0,
+    uses_default_delivery_charge: true,
+    default_below_minimum_order_mode: 'charge_delivery',
+    below_minimum_order_mode_override: null,
+    effective_below_minimum_order_mode: 'charge_delivery',
+    default_minimum_order_value: 0,
+    minimum_order_value_override: null,
+    effective_minimum_order_value: 0,
+    uses_default_order_policy: true,
   };
 }
 
@@ -327,6 +339,10 @@ function normalizeDeliveryOrder(entry: unknown): DeliveryOrder | null {
     quick_request: quickRequest,
     placed_at: toNullableString(entry.placed_at),
     allowed_transitions: allowedTransitions,
+    can_cancel_order: toBooleanValue(
+      entry.can_cancel_order,
+      allowedTransitions.includes('cancelled'),
+    ),
     building_name: building ? toNullableString(building.name) : null,
     building_address: building ? toNullableString(building.address) : null,
     wing_name: wing ? toNullableString(wing.name) : null,

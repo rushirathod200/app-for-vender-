@@ -8,6 +8,7 @@ export type VendorTabKey =
   | 'wallet'
   | 'manual'
   | 'reports'
+  | 'referral'
   | 'profile';
 
 export type OrderStatus = 'pending' | 'completed' | 'cancelled';

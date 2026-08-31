@@ -47,6 +47,7 @@ function normalizeAuthUser(payload: unknown): AuthUser | null {
     below_minimum_order_mode: normalizeBelowMinimumOrderMode(payload.below_minimum_order_mode),
     minimum_order_value: toNumberValue(payload.minimum_order_value, 50),
     office_wallet_credit_enabled: toBooleanValue(payload.office_wallet_credit_enabled, false),
+    can_top_up_customer_wallet: toBooleanValue(payload.can_top_up_customer_wallet, false),
   };
 }
 

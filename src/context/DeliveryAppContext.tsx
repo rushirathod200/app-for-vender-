@@ -3,6 +3,7 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import {
   fetchDeliveryNotificationIndex,
   fetchDeliveryUnreadNotificationCount,
+  markAllDeliveryNotificationsRead,
   markDeliveryNotificationRead,
 } from '../api/notificationsApi';
 import {
@@ -35,6 +36,7 @@ interface DeliveryAppContextValue {
   refreshOrders: (options?: RefreshOptions) => Promise<void>;
   refreshNotifications: (options?: RefreshOptions) => Promise<void>;
   markNotificationRead: (notificationId: string) => Promise<void>;
+  markAllNotificationsRead: () => Promise<void>;
   updateOrderStatus: (orderId: number, status: OrderStatus, cancelReason?: string) => Promise<void>;
   completeQuickRequest: (
     orderId: number,
@@ -324,6 +326,25 @@ export function DeliveryAppProvider({ children }: { children: React.ReactNode })
     }
   };
 
+  const markAllNotificationsRead = async (): Promise<void> => {
+    if (unreadNotificationCount <= 0) {
+      return;
+    }
+
+    setNotifications((current) => current.map((notification) => ({ ...notification, is_read: true })));
+    setUnreadNotificationCount(0);
+
+    try {
+      await markAllDeliveryNotificationsRead();
+      touchCache(['all', 'notifications']);
+    } catch (updateError) {
+      await refreshNotifications({ force: true });
+      const message = updateError instanceof Error ? updateError.message : 'Could not update notifications.';
+      setError(message);
+      throw updateError;
+    }
+  };
+
   const updateOrderStatus = async (
     orderId: number,
     status: OrderStatus,
@@ -417,6 +438,7 @@ export function DeliveryAppProvider({ children }: { children: React.ReactNode })
       refreshOrders,
       refreshNotifications,
       markNotificationRead,
+      markAllNotificationsRead,
       updateOrderStatus,
       completeQuickRequest,
     }),

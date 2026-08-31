@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { AppState, StyleSheet, View } from 'react-native';
+import { AppState, Keyboard, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { NotificationOrderAction, useNotificationTap } from '../../context/NotificationTapContext';
@@ -10,6 +10,7 @@ import { VendorDeliveryPartnersScreen } from './VendorDeliveryPartnersScreen';
 import { VendorManualOrderScreen } from './VendorManualOrderScreen';
 import { VendorOrdersScreen } from './VendorOrdersScreen';
 import { VendorProductsScreen } from './VendorProductsScreen';
+import { VendorReferralScreen } from './VendorReferralScreen';
 import { VendorProfileScreen } from './VendorProfileScreen';
 import { VendorReportsScreen } from './VendorReportsScreen';
 import { VendorWalletTopUpScreen } from './VendorWalletTopUpScreen';
@@ -27,45 +28,60 @@ export function VendorWorkspace() {
 }
 
 function VendorWorkspaceContent() {
-  const [tabHistory, setTabHistory] = useState<VendorTabKey[]>(['dashboard']);
+  const [activeTab, setActiveTab] = useState<VendorTabKey>('dashboard');
   const [highlightedOrderId, setHighlightedOrderId] = useState<number | null>(null);
   const [notificationTapRequestId, setNotificationTapRequestId] = useState(0);
   const [notificationAction, setNotificationAction] = useState<NotificationOrderAction>(null);
   const [notificationReason, setNotificationReason] = useState<string | null>(null);
   const [notificationHandledExternally, setNotificationHandledExternally] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const { registerHandler } = useNotificationTap();
   const {
     connectionUnavailable,
     isLoading,
+    profile,
     refreshAll,
+    user,
   } = useVendorApp();
-  const activeTab = tabHistory[tabHistory.length - 1];
+  const canTopUpCustomerWallet = profile
+    ? profile.can_top_up_customer_wallet
+    : user?.can_top_up_customer_wallet === true;
 
   function navigateToTab(nextTab: VendorTabKey): void {
-    setTabHistory((currentHistory) => {
-      if (currentHistory[currentHistory.length - 1] === nextTab) {
-        return currentHistory;
-      }
+    if (nextTab === 'wallet' && !canTopUpCustomerWallet) {
+      setActiveTab('dashboard');
+      return;
+    }
 
-      return [...currentHistory, nextTab];
-    });
+    setActiveTab(nextTab);
   }
 
   function goBack(): boolean {
-    let handled = true;
+    if (activeTab === 'dashboard') {
+      return false;
+    }
 
-    setTabHistory((currentHistory) => {
-      if (currentHistory.length <= 1) {
-        return currentHistory;
-      }
-
-      return currentHistory.slice(0, -1);
-    });
-
-    return handled;
+    setActiveTab('dashboard');
+    return true;
   }
 
   useAndroidBackHandler(() => goBack(), { priority: 0 });
+
+  useEffect(() => {
+    if (activeTab === 'wallet' && !canTopUpCustomerWallet) {
+      setActiveTab('dashboard');
+    }
+  }, [activeTab, canTopUpCustomerWallet]);
+
+  useEffect(() => {
+    const showSubscription = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
+    const hideSubscription = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     return registerHandler(({ orderId, action, reason, handledExternally, requestId }) => {
@@ -126,13 +142,16 @@ function VendorWorkspaceContent() {
           ) : null}
           {activeTab === 'products' ? <VendorProductsScreen /> : null}
           {activeTab === 'delivery' ? <VendorDeliveryPartnersScreen /> : null}
-          {activeTab === 'wallet' ? <VendorWalletTopUpScreen onBack={() => { goBack(); }} /> : null}
+          {activeTab === 'wallet' && canTopUpCustomerWallet ? (
+            <VendorWalletTopUpScreen onBack={() => { goBack(); }} />
+          ) : null}
           {activeTab === 'manual' ? <VendorManualOrderScreen /> : null}
           {activeTab === 'reports' ? <VendorReportsScreen onBack={() => { goBack(); }} /> : null}
-          {activeTab === 'profile' ? <VendorProfileScreen /> : null}
+          {activeTab === 'referral' ? <VendorReferralScreen /> : null}
+          {activeTab === 'profile' ? <VendorProfileScreen onOpenReferral={() => { navigateToTab('referral'); }} /> : null}
         </View>
 
-        <VendorBottomTabs activeTab={activeTab} onPressTab={navigateToTab} />
+        {!keyboardVisible ? <VendorBottomTabs activeTab={activeTab} onPressTab={navigateToTab} /> : null}
       </SafeAreaView>
 
       <ConnectionUnavailableModal

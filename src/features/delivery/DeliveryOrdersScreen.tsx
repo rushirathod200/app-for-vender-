@@ -65,6 +65,7 @@ export function DeliveryOrdersScreen({
     refreshOrders,
     refreshNotifications,
     markNotificationRead,
+    markAllNotificationsRead,
     updateOrderStatus,
     completeQuickRequest,
   } = useDeliveryApp();
@@ -385,6 +386,11 @@ export function DeliveryOrdersScreen({
     setNotificationsVisible(false);
   };
 
+  const openNotificationCenter = (): void => {
+    setNotificationsVisible(true);
+    void markAllNotificationsRead().catch(() => undefined);
+  };
+
   return (
     <View style={styles.root}>
       <ScrollView
@@ -411,9 +417,7 @@ export function DeliveryOrdersScreen({
 
             <View style={styles.headerActions}>
               <Pressable
-                onPress={() => {
-                  setNotificationsVisible(true);
-                }}
+                onPress={openNotificationCenter}
                 style={styles.notificationButton}
               >
                 <Ionicons name="notifications-outline" size={18} color="#ffffff" />
@@ -462,7 +466,7 @@ export function DeliveryOrdersScreen({
             ? order.allowed_transitions
             : getDeliveryTransitions(order.status);
           const showCompleteAction = nextStatuses.includes('delivered');
-          const canCancel = nextStatuses.includes('cancelled');
+          const canCancel = order.can_cancel_order && nextStatuses.includes('cancelled');
           const isQuickRequest = order.order_channel === 'office_quick_request';
 
           return (
@@ -471,7 +475,12 @@ export function DeliveryOrdersScreen({
               style={[styles.orderCard, highlightedOrderId === order.id ? styles.highlightedOrderCard : null]}
             >
               <View style={styles.rowBetween}>
-                <Text style={styles.orderId}>{order.order_no}</Text>
+                <View style={styles.orderPrimaryCopy}>
+                  <Text style={styles.customerPrimaryText}>
+                    {order.customer_name ?? order.ordered_by_name ?? 'Customer'}
+                  </Text>
+                  <Text style={styles.orderReference}>{order.order_no}</Text>
+                </View>
                 <StatusBadge
                   label={deliveryStatusLabel(order.status)}
                   tone={deliveryStatusTone(order.status)}
@@ -512,19 +521,7 @@ export function DeliveryOrdersScreen({
                 <Text style={styles.locationTagText}>{buildDeliveryLabel(order)}</Text>
               </View>
 
-              <View style={styles.itemsBox}>
-                {order.items.length > 0 ? (
-                  order.items.map((item) => (
-                    <Text key={`${order.id}-${item.id}-${item.title}`} style={styles.itemText}>
-                      • {item.title} x{item.qty}
-                    </Text>
-                  ))
-                ) : isQuickRequest ? (
-                  <Text style={styles.itemText}>
-                    • Requested: {order.quick_request?.requested_label ?? 'Tea / Coffee'}
-                  </Text>
-                ) : null}
-              </View>
+              <DeliveryItemsTable order={order} />
 
               {order.notes ? (
                 <View style={styles.noteWrap}>
@@ -540,12 +537,7 @@ export function DeliveryOrdersScreen({
                 </View>
               ) : null}
 
-              <View style={styles.valueRow}>
-                <Text style={styles.valueLabel}>Order Value</Text>
-                <Text style={[styles.valueText, order.status === 'cancelled' ? styles.cancelledValue : null]}>
-                  {isQuickRequest && order.quick_request?.payment_pending ? 'Pending' : `₹${order.total}`}
-                </Text>
-              </View>
+              <DeliveryPriceSummary order={order} />
 
               {showCompleteAction || canCancel ? (
                 <View style={styles.actionsRow}>
@@ -910,6 +902,96 @@ function buildDeliveryLabel(order: DeliveryOrder): string {
   return segments.length ? segments.join(' • ') : 'Delivery address unavailable';
 }
 
+function DeliveryItemsTable({ order }: { order: DeliveryOrder }) {
+  if (order.items.length === 0 && order.quick_request) {
+    return (
+      <View style={styles.itemsBox}>
+        <Text style={styles.itemTitle}>Requested: {order.quick_request.requested_label ?? 'Tea / Coffee'}</Text>
+        <Text style={styles.itemCalculation}>Final quantity and price will be added at completion</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.itemsBox}>
+      {order.items.map((item, index) => (
+        <View key={`${order.id}-${item.id}-${item.title}`}>
+          <View style={styles.itemRow}>
+            <View style={styles.itemCopy}>
+              <Text style={styles.itemTitle}>{item.title}</Text>
+              {item.variant_name ? <Text style={styles.itemVariant}>{item.variant_name}</Text> : null}
+              <Text style={styles.itemCalculation}>{item.qty} × {formatCurrency(item.unit_price)}</Text>
+            </View>
+            <Text style={styles.itemLineTotal}>{formatCurrency(item.line_total)}</Text>
+          </View>
+          {index < order.items.length - 1 ? <View style={styles.itemSeparator} /> : null}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function DeliveryPriceSummary({ order }: { order: DeliveryOrder }) {
+  const paymentPending = order.order_channel === 'office_quick_request' && order.quick_request?.payment_pending;
+  const paymentLabel = deliveryPaymentLabel(order.payment_method ?? order.quick_request?.payment_method ?? null);
+
+  if (paymentPending) {
+    return (
+      <View style={styles.priceSummary}>
+        <View style={styles.priceTotalRow}>
+          <Text style={styles.priceTotalLabel}>Total</Text>
+          <Text style={styles.pricePendingValue}>Pending</Text>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.priceSummary}>
+      <View style={styles.priceRow}>
+        <Text style={styles.priceLabel}>Items subtotal</Text>
+        <Text style={styles.priceValue}>{formatCurrency(order.subtotal)}</Text>
+      </View>
+      <View style={styles.priceRow}>
+        <Text style={styles.priceLabel}>Delivery fee</Text>
+        <Text style={styles.priceValue}>{order.delivery_fee > 0 ? formatCurrency(order.delivery_fee) : 'Free'}</Text>
+      </View>
+      <View style={styles.priceDivider} />
+      <View style={styles.priceTotalRow}>
+        <Text style={styles.priceTotalLabel}>Total</Text>
+        <Text style={[styles.priceTotalValue, order.status === 'cancelled' ? styles.cancelledValue : null]}>
+          {formatCurrency(order.total)}
+        </Text>
+      </View>
+      {paymentLabel ? (
+        <View style={styles.paymentRow}>
+          <Ionicons name="wallet-outline" size={14} color="#6b7280" />
+          <Text style={styles.paymentText}>Payment: {paymentLabel}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function deliveryPaymentLabel(paymentMethod: string | null): string | null {
+  if (!paymentMethod) {
+    return null;
+  }
+
+  const normalized = paymentMethod.trim().toLowerCase();
+  const knownLabels: Record<string, string> = {
+    cod: 'Cash on delivery',
+    cash: 'Cash',
+    cash_on_delivery: 'Cash on delivery',
+    office_wallet: 'Office Wallet',
+    wallet: 'Customer Wallet',
+    online: 'Online',
+  };
+
+  return knownLabels[normalized]
+    ?? normalized.split('_').filter(Boolean).map((part) => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`).join(' ');
+}
+
 const styles = StyleSheet.create({
   root: {
     flex: 1,
@@ -1054,11 +1136,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  orderId: {
-    color: '#212127',
-    fontSize: 20,
-    fontWeight: '900',
+  orderPrimaryCopy: {
     flex: 1,
+    minWidth: 0,
+  },
+  customerPrimaryText: {
+    color: '#212127',
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  orderReference: {
+    color: '#92929c',
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 2,
   },
   metaRow: {
     flexDirection: 'row',
@@ -1124,17 +1215,48 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   itemsBox: {
-    borderRadius: 12,
-    backgroundColor: '#f1f1f4',
+    borderRadius: 14,
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#ececf2',
-    padding: 10,
-    gap: 3,
+    borderColor: '#e7e8ef',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
   },
-  itemText: {
-    color: '#4a4a53',
+  itemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+  },
+  itemCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  itemTitle: {
+    color: '#28282e',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  itemVariant: {
+    color: tokens.colors.deliveryPrimary,
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  itemCalculation: {
+    color: '#888892',
     fontSize: 12,
     fontWeight: '600',
+    marginTop: 3,
+  },
+  itemLineTotal: {
+    color: '#28282e',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  itemSeparator: {
+    height: 1,
+    backgroundColor: '#eeeef2',
   },
   noteWrap: {
     backgroundColor: '#fff7e8',
@@ -1178,20 +1300,64 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     lineHeight: 17,
   },
-  valueRow: {
+  priceSummary: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#dfe2f4',
+    backgroundColor: '#ffffff',
+    padding: 12,
+    gap: 7,
+  },
+  priceRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  valueLabel: {
+  priceLabel: {
     color: '#8b8b95',
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
   },
-  valueText: {
-    color: '#212127',
-    fontSize: 18,
+  priceValue: {
+    color: '#4f4f58',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  priceDivider: {
+    height: 1,
+    backgroundColor: '#ececf1',
+    marginVertical: 2,
+  },
+  priceTotalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  priceTotalLabel: {
+    color: '#28282e',
+    fontSize: 15,
     fontWeight: '900',
+  },
+  priceTotalValue: {
+    color: '#1f2025',
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  pricePendingValue: {
+    color: tokens.colors.deliveryPrimary,
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  paymentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 2,
+  },
+  paymentText: {
+    color: '#6b7280',
+    fontSize: 11,
+    fontWeight: '700',
   },
   cancelledValue: {
     color: '#b6b6be',

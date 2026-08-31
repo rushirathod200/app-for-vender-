@@ -129,6 +129,13 @@ export async function markVendorNotificationRead(notificationId: string): Promis
   return markNotificationRead(API_ENDPOINTS.vendorNotifications, notificationId);
 }
 
+export async function markAllVendorNotificationsRead(): Promise<number> {
+  const payload = await apiClient.patch<unknown>(API_ENDPOINTS.vendorNotificationsReadAll);
+  const data = extractDataEnvelope(payload);
+
+  return isRecord(data) ? toNumberValue(data.unread_count, 0) : 0;
+}
+
 export async function fetchDeliveryNotifications(): Promise<AppNotification[]> {
   return fetchNotifications(API_ENDPOINTS.deliveryNotifications);
 }
@@ -143,4 +150,11 @@ export async function fetchDeliveryUnreadNotificationCount(): Promise<number> {
 
 export async function markDeliveryNotificationRead(notificationId: string): Promise<AppNotification | null> {
   return markNotificationRead(API_ENDPOINTS.deliveryNotifications, notificationId);
+}
+
+export async function markAllDeliveryNotificationsRead(): Promise<number> {
+  const payload = await apiClient.patch<unknown>(API_ENDPOINTS.deliveryNotificationsReadAll);
+  const data = extractDataEnvelope(payload);
+
+  return isRecord(data) ? toNumberValue(data.unread_count, 0) : 0;
 }

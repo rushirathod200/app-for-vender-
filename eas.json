@@ -1,6 +1,7 @@
 {
   "cli": {
-    "version": ">= 12.0.0"
+    "version": ">= 12.0.0",
+    "appVersionSource": "local"
   },
   "build": {
     "development": {
@@ -13,9 +14,15 @@
       "android": {
         "buildType": "apk"
       },
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://deskdrop.in/api"
+      },
       "channel": "preview"
     },
     "production": {
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://deskdrop.in/api"
+      },
       "channel": "production"
     }
   }

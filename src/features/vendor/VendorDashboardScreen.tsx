@@ -31,11 +31,13 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
     notificationsLoading,
     deliveryPartners,
     isLoading,
+    storeStatusUpdating,
     error,
     refreshAll,
     refreshOrders,
     refreshNotifications,
     markNotificationRead,
+    markAllNotificationsRead,
     toggleStoreOpen,
   } = useVendorApp();
   const [notificationsVisible, setNotificationsVisible] = useState(false);
@@ -47,6 +49,7 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
 
   const storeName = useMemo(() => resolveVendorDisplayName(profile?.name ?? null, buildings), [buildings, profile?.name]);
   const isStoreOpen = profile?.store_open ?? false;
+  const canTopUpCustomerWallet = profile?.can_top_up_customer_wallet === true;
 
   const pendingOrdersCount = orderCounts.pending;
   const completedOrdersCount = orderCounts.completed;
@@ -65,7 +68,10 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
   const handleNotificationOpen = async (notificationId: string, orderId: number | null): Promise<void> => {
     try {
       await markNotificationRead(notificationId);
-      await refreshOrders({ force: true });
+      const refreshed = await refreshOrders({ force: true });
+      if (!refreshed) {
+        return;
+      }
     } catch {
       return;
     }
@@ -73,6 +79,11 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
     onOpenOrderFromNotification(orderId);
     setNotificationsVisible(false);
     onGoToTab('orders');
+  };
+
+  const openNotificationCenter = (): void => {
+    setNotificationsVisible(true);
+    void markAllNotificationsRead().catch(() => undefined);
   };
 
   const stats = [
@@ -119,7 +130,7 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
               <Text style={styles.greeting}>Welcome back</Text>
               <Text style={styles.storeName}>{storeName}</Text>
             </View>
-            <Pressable style={styles.notificationButton} onPress={() => setNotificationsVisible(true)}>
+            <Pressable style={styles.notificationButton} onPress={openNotificationCenter}>
               <Ionicons name="notifications-outline" size={20} color="#ffffff" />
               {unreadNotificationCount > 0 ? (
                 <View style={styles.notificationBadge}>
@@ -137,10 +148,16 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
               </Text>
             </View>
             <Pressable
+              accessibilityState={{ disabled: storeStatusUpdating }}
+              disabled={storeStatusUpdating}
               onPress={() => {
-                void toggleStoreOpen();
+                void toggleStoreOpen().catch(() => undefined);
               }}
-              style={[styles.statusTogglePill, isStoreOpen ? styles.statusTogglePillOn : styles.statusTogglePillOff]}
+              style={[
+                styles.statusTogglePill,
+                isStoreOpen ? styles.statusTogglePillOn : styles.statusTogglePillOff,
+                storeStatusUpdating ? styles.statusTogglePillUpdating : null,
+              ]}
             >
               <View style={[styles.statusDot, isStoreOpen ? styles.statusDotOn : styles.statusDotOff]} />
               <Text style={[styles.statusToggleText, isStoreOpen ? styles.statusToggleTextOn : styles.statusToggleTextOff]}>
@@ -209,16 +226,18 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
           <Ionicons name="chevron-forward" size={18} color="#c2c2cb" />
         </Pressable>
 
-        <Pressable style={styles.quickActionCard} onPress={() => onGoToTab('wallet')}>
-          <View style={[styles.quickActionIcon, { backgroundColor: '#fff1e6' }]}>
-            <Ionicons name="wallet-outline" size={20} color={tokens.colors.vendorPrimary} />
-          </View>
-          <View style={styles.quickActionBody}>
-            <Text style={styles.quickActionTitle}>Wallet Top-up</Text>
-            <Text style={styles.quickActionSub}>Add amount in user or office wallet</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color="#c2c2cb" />
-        </Pressable>
+        {canTopUpCustomerWallet ? (
+          <Pressable style={styles.quickActionCard} onPress={() => onGoToTab('wallet')}>
+            <View style={[styles.quickActionIcon, { backgroundColor: '#fff1e6' }]}>
+              <Ionicons name="wallet-outline" size={20} color={tokens.colors.vendorPrimary} />
+            </View>
+            <View style={styles.quickActionBody}>
+              <Text style={styles.quickActionTitle}>Customer Top-up</Text>
+              <Text style={styles.quickActionSub}>Add funds usable only at your store</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#c2c2cb" />
+          </Pressable>
+        ) : null}
 
         <Pressable style={styles.quickActionCard} onPress={() => onGoToTab('manual')}>
           <View style={[styles.quickActionIcon, { backgroundColor: '#fff1e6' }]}>
@@ -310,6 +329,7 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
         activeTab="dashboard"
         title={storeName}
         subtitle={profile?.email ?? profile?.mobile ?? 'Vendor shortcuts'}
+        canTopUpCustomerWallet={canTopUpCustomerWallet}
         onClose={() => setSidebarVisible(false)}
         onSelectTab={onGoToTab}
       />
@@ -422,6 +442,9 @@ const styles = StyleSheet.create({
   },
   statusTogglePillOff: {
     backgroundColor: '#ffeceb',
+  },
+  statusTogglePillUpdating: {
+    opacity: 0.65,
   },
   statusDot: {
     width: 9,

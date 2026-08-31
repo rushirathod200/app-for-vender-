@@ -20,8 +20,11 @@ interface RequestOptions {
   query?: Record<string, string | number | boolean | null | undefined>;
 }
 
-const GET_NETWORK_ATTEMPTS = 3;
+const GET_NETWORK_ATTEMPTS = 2;
 const NETWORK_RETRY_DELAY_MS = 700;
+const GET_REQUEST_TIMEOUT_MS = 12_000;
+const MUTATION_REQUEST_TIMEOUT_MS = 30_000;
+const UPLOAD_REQUEST_TIMEOUT_MS = 60_000;
 
 function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => {
@@ -35,6 +38,18 @@ function isNgrokUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function requestTimeoutMs(method: RequestOptions['method'], body: BodyInit | undefined): number {
+  if (typeof FormData !== 'undefined' && body instanceof FormData) {
+    return UPLOAD_REQUEST_TIMEOUT_MS;
+  }
+
+  return method === 'GET' ? GET_REQUEST_TIMEOUT_MS : MUTATION_REQUEST_TIMEOUT_MS;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 class HttpClient {
@@ -67,7 +82,7 @@ class HttpClient {
   private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
     if (API_BASE_URL_IS_PLACEHOLDER) {
       throw new ApiError(
-        'Set EXPO_PUBLIC_API_BASE_URL to your current ngrok HTTPS URL ending with /api before using the app.',
+        'Set EXPO_PUBLIC_API_BASE_URL to a valid HTTPS URL ending with /api before using the app.',
         0,
         null,
       );
@@ -87,8 +102,14 @@ class HttpClient {
 
     let body: BodyInit | undefined;
     if (options.body !== undefined) {
-      headers['Content-Type'] = 'application/json';
-      body = JSON.stringify(options.body);
+      if (typeof FormData !== 'undefined' && options.body instanceof FormData) {
+        // Let fetch set the multipart boundary. Manually setting Content-Type
+        // breaks React Native and browser uploads.
+        body = options.body;
+      } else {
+        headers['Content-Type'] = 'application/json';
+        body = JSON.stringify(options.body);
+      }
     }
 
     if (this.token) {
@@ -98,24 +119,41 @@ class HttpClient {
     let response: Response | null = null;
     let lastNetworkError: unknown = null;
     const attempts = method === 'GET' ? GET_NETWORK_ATTEMPTS : 1;
+    const timeoutMs = requestTimeoutMs(method, body);
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
       try {
         response = await fetch(url, {
           method,
           headers,
           body,
+          signal: controller.signal,
         });
         break;
       } catch (error) {
-        lastNetworkError = error;
+        lastNetworkError = isAbortError(error)
+          ? new ApiError(
+              'The request took too long. Please check your connection and try again.',
+              0,
+              { code: 'request_timeout', timeout_ms: timeoutMs },
+            )
+          : error;
         if (attempt < attempts) {
           await wait(NETWORK_RETRY_DELAY_MS * attempt);
         }
+      } finally {
+        clearTimeout(timeout);
       }
     }
 
     if (!response) {
+      if (lastNetworkError instanceof ApiError) {
+        throw lastNetworkError;
+      }
+
       const nativeMessage = lastNetworkError instanceof Error
         ? lastNetworkError.message
         : String(lastNetworkError ?? 'Network request failed');

@@ -1,6 +1,7 @@
 import { API_BASE_URL, API_ENDPOINTS } from '../config/api';
 import {
   AssignedDeliveryPartner,
+  BuildingOrderPolicyInput,
   Building,
   CatalogProduct,
   DeliveryPartnerFilter,
@@ -11,20 +12,27 @@ import {
   ManualOfficePickerBuilding,
   ManualOfficeReport,
   MenuItem,
+  OrderTabCounts,
+  OrderTabKey,
   OrderStatus,
   PrintOrderDetails,
   PrintOrderFile,
   QuickRequestDetails,
+  QuickRequestPaymentMethod,
   StockFilter,
   BelowMinimumOrderMode,
   StoreHours,
   VendorDeliveryPartner,
   VendorOrder,
   VendorOrderItem,
+  VendorOrderSummary,
   MenuItemVariant,
+  ProductCategoryOption,
+  ProductImageAsset,
+  ProductSubcategoryOption,
   VendorOfficeWalletLookupItem,
   VendorProfile,
-  VendorWalletTargetType,
+  VendorProductCreateInput,
   VendorWalletTopUpReceipt,
 } from '../types/vendor';
 import {
@@ -50,26 +58,54 @@ function normalizeBelowMinimumOrderMode(value: unknown): BelowMinimumOrderMode {
   return 'charge_delivery';
 }
 
+function normalizeNullableBelowMinimumOrderMode(value: unknown): BelowMinimumOrderMode | null {
+  if (value == null) return null;
+
+  const mode = toStringValue(value, '');
+  return mode === 'charge_delivery' || mode === 'block_order' || mode === 'free_delivery'
+    ? mode
+    : null;
+}
+
 const DEFAULT_STORE_HOURS: StoreHours = {
-  mon: { is_open: true, opens_at: '08:00', closes_at: '20:00' },
-  tue: { is_open: true, opens_at: '08:00', closes_at: '20:00' },
-  wed: { is_open: true, opens_at: '08:00', closes_at: '20:00' },
-  thu: { is_open: true, opens_at: '08:00', closes_at: '20:00' },
-  fri: { is_open: true, opens_at: '08:00', closes_at: '20:00' },
-  sat: { is_open: true, opens_at: '08:00', closes_at: '20:00' },
-  sun: { is_open: false, opens_at: '08:00', closes_at: '20:00' },
+  mon: { is_open: true, slots: [{ opens_at: '08:00', closes_at: '20:00' }] },
+  tue: { is_open: true, slots: [{ opens_at: '08:00', closes_at: '20:00' }] },
+  wed: { is_open: true, slots: [{ opens_at: '08:00', closes_at: '20:00' }] },
+  thu: { is_open: true, slots: [{ opens_at: '08:00', closes_at: '20:00' }] },
+  fri: { is_open: true, slots: [{ opens_at: '08:00', closes_at: '20:00' }] },
+  sat: { is_open: true, slots: [{ opens_at: '08:00', closes_at: '20:00' }] },
+  sun: { is_open: false, slots: [{ opens_at: '08:00', closes_at: '20:00' }] },
 };
 
 function normalizeStoreHours(value: unknown): StoreHours {
   const source = isRecord(value) ? value : {};
-  const normalized = { ...DEFAULT_STORE_HOURS };
+  const normalized = Object.fromEntries(
+    Object.entries(DEFAULT_STORE_HOURS).map(([day, entry]) => [day, {
+      ...entry,
+      slots: entry.slots.map((slot) => ({ ...slot })),
+    }]),
+  ) as StoreHours;
 
   (Object.keys(normalized) as Array<keyof StoreHours>).forEach((day) => {
     const entry = isRecord(source[day]) ? source[day] : {};
+    const fallbackSlot = normalized[day].slots[0];
+    const sourceSlots = asArray(entry.slots);
+    const slots = sourceSlots.length > 0
+      ? sourceSlots
+        .filter(isRecord)
+        .slice(0, 4)
+        .map((slot) => ({
+          opens_at: toStringValue(slot.opens_at, fallbackSlot.opens_at),
+          closes_at: toStringValue(slot.closes_at, fallbackSlot.closes_at),
+        }))
+      : [{
+          opens_at: toStringValue(entry.opens_at, fallbackSlot.opens_at),
+          closes_at: toStringValue(entry.closes_at, fallbackSlot.closes_at),
+        }];
+
     normalized[day] = {
       is_open: toBooleanValue(entry.is_open, normalized[day].is_open),
-      opens_at: toStringValue(entry.opens_at, normalized[day].opens_at),
-      closes_at: toStringValue(entry.closes_at, normalized[day].closes_at),
+      slots,
     };
   });
 
@@ -81,11 +117,25 @@ function toPublicAssetUrl(path: string | null): string | null {
     return null;
   }
 
-  if (path.startsWith('http://') || path.startsWith('https://')) {
-    return path;
-  }
-
   const apiOrigin = new URL(API_BASE_URL).origin;
+
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    try {
+      const assetUrl = new URL(path);
+      const localAssetHosts = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']);
+
+      // Laravel can generate localhost asset URLs while the API is exposed through
+      // ngrok. A phone would resolve localhost to itself, so retain the asset path
+      // but serve it from the same public origin as the configured API.
+      if (localAssetHosts.has(assetUrl.hostname)) {
+        return `${apiOrigin}${assetUrl.pathname}${assetUrl.search}${assetUrl.hash}`;
+      }
+
+      return assetUrl.toString();
+    } catch {
+      return null;
+    }
+  }
 
   if (path.startsWith('/')) {
     return `${apiOrigin}${path}`;
@@ -104,6 +154,11 @@ function normalizeBuilding(entry: unknown): Building | null {
     return null;
   }
 
+  const defaultDeliveryCharge = toNumberValue(entry.default_delivery_charge, 0);
+  const deliveryChargeOverride = entry.delivery_charge_override == null
+    ? null
+    : toNumberValue(entry.delivery_charge_override, 0);
+
   return {
     id,
     name: toStringValue(entry.name, `Building ${id}`),
@@ -115,6 +170,25 @@ function normalizeBuilding(entry: unknown): Building | null {
     orders_count: toNumberValue(entry.orders_count, 0),
     is_quick_request_vendor: toBooleanValue(entry.is_quick_request_vendor, false),
     is_print_vendor: toBooleanValue(entry.is_print_vendor, false),
+    default_delivery_charge: defaultDeliveryCharge,
+    delivery_charge_override: deliveryChargeOverride,
+    effective_delivery_charge: toNumberValue(
+      entry.effective_delivery_charge,
+      deliveryChargeOverride ?? defaultDeliveryCharge,
+    ),
+    uses_default_delivery_charge: toBooleanValue(
+      entry.uses_default_delivery_charge,
+      deliveryChargeOverride === null,
+    ),
+    default_below_minimum_order_mode: normalizeBelowMinimumOrderMode(entry.default_below_minimum_order_mode),
+    below_minimum_order_mode_override: normalizeNullableBelowMinimumOrderMode(entry.below_minimum_order_mode_override),
+    effective_below_minimum_order_mode: normalizeBelowMinimumOrderMode(entry.effective_below_minimum_order_mode),
+    default_minimum_order_value: toNumberValue(entry.default_minimum_order_value, 0),
+    minimum_order_value_override: entry.minimum_order_value_override == null
+      ? null
+      : toNumberValue(entry.minimum_order_value_override, 0),
+    effective_minimum_order_value: toNumberValue(entry.effective_minimum_order_value, 0),
+    uses_default_order_policy: toBooleanValue(entry.uses_default_order_policy, deliveryChargeOverride === null),
   };
 }
 
@@ -169,7 +243,8 @@ function normalizeMenuItem(entry: unknown): MenuItem | null {
     price: toNumberValue(entry.price, 0),
     is_available: toBooleanValue(entry.is_available, true),
     photo_url: toPublicAssetUrl(
-      toNullableString(entry.photo_url) ??
+      toNullableString(entry.image_url) ??
+        toNullableString(entry.photo_url) ??
         toNullableString(entry.photo_path) ??
         (predefined ? toNullableString(predefined.default_image_url) ?? toNullableString(predefined.default_image) : null),
     ),
@@ -184,7 +259,60 @@ function normalizeMenuItem(entry: unknown): MenuItem | null {
     variants: asArray(entry.variants)
       .map(normalizeMenuItemVariant)
       .filter((variant): variant is MenuItemVariant => !!variant),
+    is_vendor_owned: toBooleanValue(entry.is_vendor_owned, false),
   };
+}
+
+function normalizeSubcategoryOption(entry: unknown): ProductSubcategoryOption | null {
+  if (!isRecord(entry)) {
+    return null;
+  }
+
+  const id = toNumberValue(entry.id, 0);
+  const name = toStringValue(entry.name, '');
+  if (!id || !name) {
+    return null;
+  }
+
+  return {
+    id,
+    name,
+    slug: toStringValue(entry.slug, ''),
+  };
+}
+
+function normalizeCategoryOption(entry: unknown): ProductCategoryOption | null {
+  if (!isRecord(entry)) {
+    return null;
+  }
+
+  const id = toNumberValue(entry.id, 0);
+  const name = toStringValue(entry.name, '');
+  if (!id || !name) {
+    return null;
+  }
+
+  return {
+    id,
+    name,
+    slug: toStringValue(entry.slug, ''),
+    service_group: toNullableString(entry.service_group),
+    subcategories: asArray(entry.subcategories)
+      .map(normalizeSubcategoryOption)
+      .filter((item): item is ProductSubcategoryOption => !!item),
+  };
+}
+
+function appendImage(formData: FormData, field: string, asset: ProductImageAsset): void {
+  const name = asset.fileName?.trim() || `product-${Date.now()}.jpg`;
+  const type = asset.mimeType?.trim() || 'image/jpeg';
+
+  if (asset.file) {
+    formData.append(field, asset.file, name);
+    return;
+  }
+
+  formData.append(field, { uri: asset.uri, name, type } as unknown as Blob);
 }
 
 function normalizeMenuItemVariant(entry: unknown): MenuItemVariant | null {
@@ -219,6 +347,7 @@ function normalizeOrderItem(entry: unknown): VendorOrderItem | null {
   return {
     id,
     title: toStringValue(entry.title, `Item ${id || ''}`.trim()),
+    variant_name: toNullableString(entry.variant_name),
     qty: toNumberValue(entry.qty, 1),
     unit_price: toNumberValue(entry.unit_price, 0),
     line_total: toNumberValue(entry.line_total, 0),
@@ -663,6 +792,7 @@ function normalizeDeliveryPartner(entry: unknown): VendorDeliveryPartner | null 
     is_active: toBooleanValue(entry.is_active, true),
     partner_active: toBooleanValue(entry.partner_active, true),
     app_access_active: toBooleanValue(entry.app_access_active, true),
+    can_cancel_orders: toBooleanValue(entry.can_cancel_orders, true),
     active_order_count: toNumberValue(entry.active_order_count, 0),
   };
 }
@@ -708,6 +838,7 @@ function normalizeProfile(payload: unknown): VendorProfile | null {
     quick_request_tea_price: toNumberValue(envelope.quick_request_tea_price, 15),
     quick_request_coffee_price: toNumberValue(envelope.quick_request_coffee_price, 20),
     can_manage_quick_request_pricing: toBooleanValue(envelope.can_manage_quick_request_pricing, false),
+    can_top_up_customer_wallet: toBooleanValue(envelope.can_top_up_customer_wallet, false),
     vendor_category: toNullableString(envelope.vendor_category),
     print_bw_price: toNumberValue(envelope.print_bw_price, 2),
     print_color_price: toNumberValue(envelope.print_color_price, 10),
@@ -729,15 +860,13 @@ function normalizeWalletTopUpReceipt(payload: unknown): VendorWalletTopUpReceipt
     return null;
   }
 
-  const targetType = toStringValue(data.target_type, 'user') as VendorWalletTargetType;
-
   return {
     message: extractMessage(payload, 'Wallet topped up successfully.'),
-    target_type: targetType === 'office' ? 'office' : 'user',
+    target_type: 'user',
     mobile: toStringValue(data.mobile, ''),
     target_name: toNullableString(data.target_name),
     balance: toNumberValue(data.balance, 0),
-    wallet_label: toStringValue(data.wallet_label, targetType === 'office' ? 'Office Wallet' : 'Customer Wallet'),
+    wallet_label: toStringValue(data.wallet_label, 'Customer Wallet'),
   };
 }
 
@@ -802,13 +931,26 @@ export async function fetchAssignedBuildings(): Promise<Building[]> {
   return normalizeCollection(payload, normalizeBuilding);
 }
 
+export async function updateBuildingDeliveryCharge(
+  buildingId: number,
+  input: BuildingOrderPolicyInput,
+): Promise<Building | null> {
+  const payload = await apiClient.patch<unknown>(
+    `${API_ENDPOINTS.vendorBuildings}/${buildingId}/delivery-charge`,
+    input,
+  );
+
+  return normalizeBuilding(extractDataEnvelope(payload));
+}
+
 export async function topUpVendorWallet(input: {
-  mobile?: string;
-  office_id?: number;
+  mobile: string;
   amount: number;
-  target_type: VendorWalletTargetType;
 }): Promise<VendorWalletTopUpReceipt | null> {
-  const payload = await apiClient.post<unknown>(API_ENDPOINTS.vendorWalletTopUp, input);
+  const payload = await apiClient.post<unknown>(API_ENDPOINTS.vendorWalletTopUp, {
+    ...input,
+    target_type: 'user',
+  });
   return normalizeWalletTopUpReceipt(payload);
 }
 
@@ -923,6 +1065,7 @@ interface FetchMenuParams {
   buildingId?: number;
   search?: string;
   stock?: StockFilter;
+  cacheBust?: number;
 }
 
 export async function fetchVendorMenu(params: FetchMenuParams): Promise<MenuItem[]> {
@@ -930,9 +1073,86 @@ export async function fetchVendorMenu(params: FetchMenuParams): Promise<MenuItem
     building_id: params.buildingId,
     search: params.search ?? '',
     stock: params.stock ?? '',
+    _t: params.cacheBust,
   });
 
   return normalizeCollection(payload, normalizeMenuItem);
+}
+
+export async function fetchVendorProductFormOptions(): Promise<ProductCategoryOption[]> {
+  const payload = await apiClient.get<unknown>(API_ENDPOINTS.vendorProductFormOptions);
+  return normalizeCollection(payload, normalizeCategoryOption);
+}
+
+export async function createVendorProductSubcategory(input: {
+  category_id: number;
+  name: string;
+}): Promise<ProductSubcategoryOption> {
+  const payload = await apiClient.post<unknown>(API_ENDPOINTS.vendorProductSubcategories, input);
+  const subcategory = normalizeSubcategoryOption(extractDataEnvelope(payload));
+
+  if (!subcategory) {
+    throw new Error('The server returned an invalid subcategory.');
+  }
+
+  return subcategory;
+}
+
+export async function createVendorProduct(input: VendorProductCreateInput): Promise<MenuItem> {
+  const formData = new FormData();
+  formData.append('name', input.name);
+  if (input.description) formData.append('description', input.description);
+  formData.append('category_id', String(input.category_id));
+  formData.append('subcategory_id', String(input.subcategory_id));
+  if (input.mrp !== null) formData.append('mrp', String(input.mrp));
+  formData.append('price', String(input.price));
+  if (input.gst_rate !== null) formData.append('gst_rate', String(input.gst_rate));
+  formData.append('is_available', input.is_available ? '1' : '0');
+  appendImage(formData, 'photo', input.photo);
+
+  input.variants.forEach((variant, index) => {
+    formData.append(`variants[${index}][name]`, variant.name);
+    if (variant.mrp !== null) formData.append(`variants[${index}][mrp]`, String(variant.mrp));
+    formData.append(`variants[${index}][price]`, String(variant.price));
+    if (variant.gst_rate !== null) formData.append(`variants[${index}][gst_rate]`, String(variant.gst_rate));
+    formData.append(`variants[${index}][is_available]`, variant.is_available ? '1' : '0');
+  });
+
+  const payload = await apiClient.post<unknown>(API_ENDPOINTS.vendorProducts, formData);
+  const product = normalizeMenuItem(extractDataEnvelope(payload));
+  if (!product) {
+    throw new Error('The server returned an invalid product.');
+  }
+
+  return product;
+}
+
+export async function updateVendorMenuItemPhoto(
+  menuItemId: number,
+  photo: ProductImageAsset,
+): Promise<MenuItem> {
+  const formData = new FormData();
+  appendImage(formData, 'photo', photo);
+  const payload = await apiClient.post<unknown>(
+    `${API_ENDPOINTS.vendorMenu}/${menuItemId}/photo`,
+    formData,
+  );
+  const product = normalizeMenuItem(extractDataEnvelope(payload));
+  if (!product) {
+    throw new Error('The server returned an invalid product image.');
+  }
+
+  return product;
+}
+
+export async function removeVendorMenuItemPhoto(menuItemId: number): Promise<MenuItem> {
+  const payload = await apiClient.delete<unknown>(`${API_ENDPOINTS.vendorMenu}/${menuItemId}/photo`);
+  const product = normalizeMenuItem(extractDataEnvelope(payload));
+  if (!product) {
+    throw new Error('The server returned an invalid product image.');
+  }
+
+  return product;
 }
 
 export async function createVendorMenuItem(input: {
@@ -984,6 +1204,20 @@ interface FetchOrdersParams {
   buildingId?: number;
 }
 
+export interface VendorOrdersPage {
+  orders: VendorOrder[];
+  currentPage: number;
+  lastPage: number;
+  perPage: number;
+  total: number;
+  hasMore: boolean;
+}
+
+export interface VendorOrderDashboardData {
+  counts: OrderTabCounts;
+  summary: VendorOrderSummary;
+}
+
 export async function fetchVendorOrders(params: FetchOrdersParams): Promise<VendorOrder[]> {
   const payload = await apiClient.get<unknown>(API_ENDPOINTS.vendorOrders, {
     status: params.status ?? '',
@@ -991,6 +1225,59 @@ export async function fetchVendorOrders(params: FetchOrdersParams): Promise<Vend
   });
 
   return normalizeCollection(payload, normalizeOrder);
+}
+
+export async function fetchVendorOrdersPage(params: {
+  bucket: OrderTabKey;
+  page: number;
+  perPage: number;
+  buildingId?: number;
+}): Promise<VendorOrdersPage> {
+  const payload = await apiClient.get<unknown>(API_ENDPOINTS.vendorOrders, {
+    bucket: params.bucket,
+    page: params.page,
+    per_page: params.perPage,
+    building_id: params.buildingId,
+  });
+  const root = isRecord(payload) ? payload : {};
+  const meta = isRecord(root.meta) ? root.meta : {};
+  const pagination = isRecord(meta.pagination) ? meta.pagination : {};
+  const currentPage = Math.max(1, toNumberValue(pagination.current_page, params.page));
+  const lastPage = Math.max(currentPage, toNumberValue(pagination.last_page, currentPage));
+
+  return {
+    orders: normalizeCollection(payload, normalizeOrder),
+    currentPage,
+    lastPage,
+    perPage: Math.max(1, toNumberValue(pagination.per_page, params.perPage)),
+    total: Math.max(0, toNumberValue(pagination.total, 0)),
+    hasMore: toBooleanValue(pagination.has_more, currentPage < lastPage),
+  };
+}
+
+export async function fetchVendorOrderDashboardData(buildingId?: number): Promise<VendorOrderDashboardData> {
+  const payload = await apiClient.get<unknown>(`${API_ENDPOINTS.vendorOrders}/summary`, {
+    building_id: buildingId,
+  });
+  const data = extractDataEnvelope(payload);
+  const record = isRecord(data) ? data : {};
+  const counts = isRecord(record.counts) ? record.counts : {};
+  const summary = isRecord(record.summary) ? record.summary : {};
+
+  return {
+    counts: {
+      pending: Math.max(0, toNumberValue(counts.pending, 0)),
+      completed: Math.max(0, toNumberValue(counts.completed, 0)),
+      cancelled: Math.max(0, toNumberValue(counts.cancelled, 0)),
+    },
+    summary: {
+      today_orders: Math.max(0, toNumberValue(summary.today_orders, 0)),
+      total_sales: Math.max(0, toNumberValue(summary.total_sales, 0)),
+      recent_orders: asArray(summary.recent_orders)
+        .map(normalizeOrder)
+        .filter((order): order is VendorOrder => !!order),
+    },
+  };
 }
 
 export async function fetchVendorOrder(orderId: number): Promise<VendorOrder | null> {
@@ -1024,6 +1311,27 @@ export async function updateVendorOrderStatus(
   return updatedOrder;
 }
 
+export async function completeVendorQuickRequest(
+  orderId: number,
+  input: {
+    tea_qty: number;
+    coffee_qty: number;
+    payment_method: QuickRequestPaymentMethod;
+  },
+): Promise<VendorOrder | null> {
+  const payload = await apiClient.patch<unknown>(
+    `${API_ENDPOINTS.vendorOrders}/${orderId}/quick-request-completion`,
+    input,
+  );
+
+  const updatedOrder = normalizeOrder(extractDataEnvelope(payload));
+  if (!updatedOrder || updatedOrder.status !== 'delivered') {
+    throw new Error('Server did not confirm the quick request completion.');
+  }
+
+  return updatedOrder;
+}
+
 export async function assignVendorOrderDeliveryPartner(
   orderId: number,
   deliveryUserId: number | null,
@@ -1052,6 +1360,7 @@ export async function createDeliveryPartner(input: {
   mobile: string;
   password: string;
   is_active?: boolean;
+  can_cancel_orders?: boolean;
 }): Promise<VendorDeliveryPartner | null> {
   const payload = await apiClient.post<unknown>(API_ENDPOINTS.vendorDeliveryPartners, input);
   const data = extractDataEnvelope(payload);
@@ -1065,6 +1374,7 @@ export async function updateDeliveryPartner(
     email: string;
     mobile: string;
     password?: string;
+    can_cancel_orders?: boolean;
   },
 ): Promise<VendorDeliveryPartner | null> {
   const payload = await apiClient.patch<unknown>(
