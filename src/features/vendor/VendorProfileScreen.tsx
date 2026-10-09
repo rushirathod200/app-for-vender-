@@ -768,21 +768,6 @@ export function VendorProfileScreen({ onOpenReferral }: VendorProfileScreenProps
             <Text style={styles.accountCardTitle}>Account & App</Text>
             <Text style={styles.appVersionInline}>v{APP_VERSION}</Text>
           </View>
-          {onOpenReferral ? (
-            <>
-              <Pressable accessibilityRole="button" onPress={onOpenReferral} style={styles.accountAction}>
-                <View style={styles.accountActionIcon}>
-                  <Ionicons name="people-outline" size={19} color={tokens.colors.vendorPrimary} />
-                </View>
-                <View style={styles.accountActionCopy}>
-                  <Text style={styles.accountActionTitle}>Refer &amp; Earn</Text>
-                  <Text style={styles.accountActionText}>Bring a shop to DeskDrop, earn real money</Text>
-                </View>
-                <Ionicons name="chevron-forward" size={19} color="#9a9ba4" />
-              </Pressable>
-              <View style={styles.accountDivider} />
-            </>
-          ) : null}
           <Pressable
             accessibilityRole="button"
             disabled={checkingOta}

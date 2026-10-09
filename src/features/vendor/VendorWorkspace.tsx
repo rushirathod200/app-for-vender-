@@ -10,10 +10,10 @@ import { VendorDeliveryPartnersScreen } from './VendorDeliveryPartnersScreen';
 import { VendorManualOrderScreen } from './VendorManualOrderScreen';
 import { VendorOrdersScreen } from './VendorOrdersScreen';
 import { VendorProductsScreen } from './VendorProductsScreen';
-import { VendorReferralScreen } from './VendorReferralScreen';
 import { VendorProfileScreen } from './VendorProfileScreen';
 import { VendorReportsScreen } from './VendorReportsScreen';
 import { VendorWalletTopUpScreen } from './VendorWalletTopUpScreen';
+import { BusinessInsightsScreen } from '../analytics/BusinessInsightsScreen';
 import { VendorBottomTabs } from '../shared/ui';
 import { ConnectionUnavailableModal } from '../shared/ConnectionUnavailableModal';
 import { tokens } from '../shared/tokens';
@@ -146,9 +146,16 @@ function VendorWorkspaceContent() {
             <VendorWalletTopUpScreen onBack={() => { goBack(); }} />
           ) : null}
           {activeTab === 'manual' ? <VendorManualOrderScreen /> : null}
+          {activeTab === 'analytics' ? (
+            <BusinessInsightsScreen
+              onBack={() => {
+                goBack();
+              }}
+              onNavigateToTab={navigateToTab}
+            />
+          ) : null}
           {activeTab === 'reports' ? <VendorReportsScreen onBack={() => { goBack(); }} /> : null}
-          {activeTab === 'referral' ? <VendorReferralScreen /> : null}
-          {activeTab === 'profile' ? <VendorProfileScreen onOpenReferral={() => { navigateToTab('referral'); }} /> : null}
+          {activeTab === 'profile' ? <VendorProfileScreen /> : null}
         </View>
 
         {!keyboardVisible ? <VendorBottomTabs activeTab={activeTab} onPressTab={navigateToTab} /> : null}

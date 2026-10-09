@@ -3,6 +3,7 @@ import {
   AssignedDeliveryPartner,
   BuildingOrderPolicyInput,
   Building,
+  BuildingInvitation,
   CatalogProduct,
   DeliveryPartnerFilter,
   ManualOfficeDirectoryItem,
@@ -931,6 +932,46 @@ export async function fetchAssignedBuildings(): Promise<Building[]> {
   return normalizeCollection(payload, normalizeBuilding);
 }
 
+export async function fetchBuildingInvitations(): Promise<BuildingInvitation[]> {
+  try {
+    const payload = await apiClient.get<unknown>(API_ENDPOINTS.vendorBuildingInvitations);
+    const data = extractDataEnvelope(payload);
+    return Array.isArray(data)
+      ? data.map((item) => {
+          const rec = isRecord(item) ? item : {};
+          return {
+            id: toNumberValue(rec.id, 0),
+            building_id: toNumberValue(rec.building_id, 0),
+            name: toStringValue(rec.name, 'New Building'),
+            address: toStringValue(rec.address, ''),
+            city: toStringValue(rec.city, ''),
+            offices_count: toNumberValue(rec.offices_count, 0),
+            floors_count: toNumberValue(rec.floors_count, 0),
+            invited_at: toStringValue(rec.invited_at, ''),
+          };
+        })
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function respondBuildingInvitation(
+  invitationId: number,
+  action: 'accept' | 'reject',
+): Promise<{ ok: boolean; message: string }> {
+  const payload = await apiClient.post<unknown>(
+    `${API_ENDPOINTS.vendorBuildingInvitations}/${invitationId}/respond`,
+    { action },
+  );
+  const data = extractDataEnvelope(payload);
+  const record = isRecord(data) ? data : {};
+  return {
+    ok: toBooleanValue(record.ok, true),
+    message: toStringValue(record.message, action === 'accept' ? 'Building accepted!' : 'Invitation declined.'),
+  };
+}
+
 export async function updateBuildingDeliveryCharge(
   buildingId: number,
   input: BuildingOrderPolicyInput,
@@ -1256,28 +1297,43 @@ export async function fetchVendorOrdersPage(params: {
 }
 
 export async function fetchVendorOrderDashboardData(buildingId?: number): Promise<VendorOrderDashboardData> {
-  const payload = await apiClient.get<unknown>(`${API_ENDPOINTS.vendorOrders}/summary`, {
-    building_id: buildingId,
-  });
-  const data = extractDataEnvelope(payload);
-  const record = isRecord(data) ? data : {};
-  const counts = isRecord(record.counts) ? record.counts : {};
-  const summary = isRecord(record.summary) ? record.summary : {};
+  try {
+    const payload = await apiClient.get<unknown>(`${API_ENDPOINTS.vendorOrders}/summary`, {
+      building_id: buildingId,
+    });
+    const data = extractDataEnvelope(payload);
+    const record = isRecord(data) ? data : {};
+    const counts = isRecord(record.counts) ? record.counts : {};
+    const summary = isRecord(record.summary) ? record.summary : {};
 
-  return {
-    counts: {
-      pending: Math.max(0, toNumberValue(counts.pending, 0)),
-      completed: Math.max(0, toNumberValue(counts.completed, 0)),
-      cancelled: Math.max(0, toNumberValue(counts.cancelled, 0)),
-    },
-    summary: {
-      today_orders: Math.max(0, toNumberValue(summary.today_orders, 0)),
-      total_sales: Math.max(0, toNumberValue(summary.total_sales, 0)),
-      recent_orders: asArray(summary.recent_orders)
-        .map(normalizeOrder)
-        .filter((order): order is VendorOrder => !!order),
-    },
-  };
+    return {
+      counts: {
+        pending: Math.max(0, toNumberValue(counts.pending, 0)),
+        completed: Math.max(0, toNumberValue(counts.completed, 0)),
+        cancelled: Math.max(0, toNumberValue(counts.cancelled, 0)),
+      },
+      summary: {
+        today_orders: Math.max(0, toNumberValue(summary.today_orders, 0)),
+        total_sales: Math.max(0, toNumberValue(summary.total_sales, 0)),
+        recent_orders: asArray(summary.recent_orders)
+          .map(normalizeOrder)
+          .filter((order): order is VendorOrder => !!order),
+      },
+    };
+  } catch (error) {
+    return {
+      counts: {
+        pending: 0,
+        completed: 0,
+        cancelled: 0,
+      },
+      summary: {
+        today_orders: 0,
+        total_sales: 0,
+        recent_orders: [],
+      },
+    };
+  }
 }
 
 export async function fetchVendorOrder(orderId: number): Promise<VendorOrder | null> {

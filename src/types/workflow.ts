@@ -5,6 +5,7 @@ export type VendorTabKey =
   | 'orders'
   | 'products'
   | 'delivery'
+  | 'analytics'
   | 'wallet'
   | 'manual'
   | 'reports'

@@ -301,6 +301,7 @@ const vendorTabMeta: Record<VendorTabKey, { label: string; icon: keyof typeof Ma
   orders: { label: 'Orders', icon: 'clipboard-text-outline' },
   products: { label: 'Products', icon: 'package-variant-closed' },
   delivery: { label: 'Delivery', icon: 'bike-fast' },
+  analytics: { label: 'Analytics', icon: 'chart-box-outline' },
   wallet: { label: 'Wallet', icon: 'wallet-plus-outline' },
   manual: { label: 'Manual', icon: 'notebook-plus-outline' },
   reports: { label: 'Reports', icon: 'file-chart-outline' },

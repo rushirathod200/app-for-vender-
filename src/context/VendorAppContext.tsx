@@ -314,7 +314,10 @@ export function VendorAppProvider({ children }: { children: React.ReactNode }) {
         // must not make the entire app unusable.
         const [fetchedProfile, fetchedBuildings] = await Promise.all([
           fetchVendorProfile(),
-          fetchAssignedBuildings(),
+          fetchAssignedBuildings().catch((err) => {
+            console.warn('Assigned buildings error, falling back to empty', err);
+            return [] as Building[];
+          }),
         ]);
 
         setProfile(fetchedProfile);

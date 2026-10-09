@@ -428,3 +428,15 @@ export interface VendorWalletTopUpReceipt {
   balance: number;
   wallet_label: string;
 }
+
+export interface BuildingInvitation {
+  id: number;
+  building_id: number;
+  name: string;
+  address: string;
+  city: string;
+  offices_count: number;
+  floors_count: number;
+  invited_at: string | null;
+}
+

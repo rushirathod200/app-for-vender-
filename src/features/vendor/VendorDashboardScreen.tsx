@@ -1,8 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useMemo, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { fetchBuildingInvitations, respondBuildingInvitation } from '../../api/vendorApi';
 import { useVendorApp } from '../../context/VendorAppContext';
+import { BuildingInvitation } from '../../types/vendor';
 import { VendorTabKey } from '../../types/workflow';
 import { formatCurrency, prettifyStatus } from '../../utils/format';
 import {
@@ -42,10 +44,36 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
   } = useVendorApp();
   const [notificationsVisible, setNotificationsVisible] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(false);
+  const [invitations, setInvitations] = useState<BuildingInvitation[]>([]);
+  const [respondingId, setRespondingId] = useState<number | null>(null);
+
+  const loadInvitations = async () => {
+    try {
+      const data = await fetchBuildingInvitations();
+      setInvitations(data);
+    } catch {
+      setInvitations([]);
+    }
+  };
 
   useEffect(() => {
     void refreshAll();
+    void loadInvitations();
   }, []);
+
+  const handleRespondInvitation = async (id: number, action: 'accept' | 'reject') => {
+    try {
+      setRespondingId(id);
+      const res = await respondBuildingInvitation(id, action);
+      Alert.alert(action === 'accept' ? 'Building Delivery Active' : 'Declined', res.message);
+      setInvitations((prev) => prev.filter((i) => i.id !== id));
+      await refreshAll();
+    } catch (e) {
+      Alert.alert('Error', e instanceof Error ? e.message : 'Could not process invitation.');
+    } finally {
+      setRespondingId(null);
+    }
+  };
 
   const storeName = useMemo(() => resolveVendorDisplayName(profile?.name ?? null, buildings), [buildings, profile?.name]);
   const isStoreOpen = profile?.store_open ?? false;
@@ -117,6 +145,7 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
             refreshing={isLoading}
             onRefresh={() => {
               void refreshAll({ force: true });
+              void loadInvitations();
             }}
           />
         }
@@ -177,6 +206,53 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
           </View>
         </View>
 
+        {/* Pending Building Delivery Requests */}
+        {invitations.map((inv) => (
+          <View key={inv.id} style={styles.inviteCard}>
+            <View style={styles.inviteHeader}>
+              <View style={styles.inviteIconWrap}>
+                <Ionicons name="business" size={20} color="#4f46e5" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={styles.inviteTitle}>New Delivery Request</Text>
+                  <View style={styles.inviteNewBadge}>
+                    <Text style={styles.inviteNewBadgeText}>NEW</Text>
+                  </View>
+                </View>
+                <Text style={styles.inviteBuildingName}>{inv.name}</Text>
+              </View>
+            </View>
+
+            <Text style={styles.inviteDetails}>
+              📍 {inv.address || inv.city} {inv.offices_count > 0 ? `· ${inv.offices_count} offices` : ''}
+            </Text>
+            <Text style={styles.inviteHelp}>
+              Admin invited you to deliver at this building. Accept to start receiving customer orders from this location!
+            </Text>
+
+            <View style={styles.inviteBtnRow}>
+              <Pressable
+                style={[styles.inviteAcceptBtn, respondingId === inv.id ? { opacity: 0.6 } : null]}
+                disabled={respondingId === inv.id}
+                onPress={() => void handleRespondInvitation(inv.id, 'accept')}
+              >
+                <Ionicons name="checkmark-circle" size={16} color="#ffffff" />
+                <Text style={styles.inviteAcceptText}>
+                  {respondingId === inv.id ? 'Accepting...' : 'Accept & Start Delivering'}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.inviteDeclineBtn, respondingId === inv.id ? { opacity: 0.6 } : null]}
+                disabled={respondingId === inv.id}
+                onPress={() => void handleRespondInvitation(inv.id, 'reject')}
+              >
+                <Text style={styles.inviteDeclineText}>Decline</Text>
+              </Pressable>
+            </View>
+          </View>
+        ))}
+
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
         <View style={styles.statsRow}>
@@ -192,6 +268,25 @@ export function VendorDashboardScreen({ onGoToTab, onOpenOrderFromNotification }
         </View>
 
         <SectionTitle title="Quick Actions" />
+
+        <Pressable
+          style={[styles.quickActionCard, { borderColor: '#fed7aa', backgroundColor: '#fffaf5' }]}
+          onPress={() => onGoToTab('analytics')}
+        >
+          <View style={[styles.quickActionIcon, { backgroundColor: '#ffedd5' }]}>
+            <Ionicons name="trending-up" size={20} color={tokens.colors.vendorPrimary} />
+          </View>
+          <View style={styles.quickActionBody}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={styles.quickActionTitle}>Business Analytics</Text>
+              <View style={{ backgroundColor: '#ffedd5', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6 }}>
+                <Text style={{ fontSize: 9, fontWeight: '800', color: tokens.colors.vendorPrimary }}>INSIGHTS</Text>
+              </View>
+            </View>
+            <Text style={styles.quickActionSub}>Demand, views, searches & customer growth</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={tokens.colors.vendorPrimary} />
+        </Pressable>
 
         <Pressable style={styles.quickActionCard} onPress={() => onGoToTab('orders')}>
           <View style={[styles.quickActionIcon, { backgroundColor: '#fff1e6' }]}>
@@ -587,4 +682,98 @@ const styles = StyleSheet.create({
   badgeWrap: {
     alignItems: 'flex-start',
   },
+  inviteCard: {
+    backgroundColor: '#f5f3ff',
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#c7d2fe',
+    padding: 14,
+    marginBottom: 12,
+  },
+  inviteHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginBottom: 8,
+  },
+  inviteIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: '#ede9fe',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inviteTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#6366f1',
+    textTransform: 'uppercase',
+  },
+  inviteNewBadge: {
+    backgroundColor: '#ec4899',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 6,
+  },
+  inviteNewBadgeText: {
+    fontSize: 9,
+    fontWeight: '900',
+    color: '#ffffff',
+  },
+  inviteBuildingName: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#1e1b4b',
+    marginTop: 2,
+  },
+  inviteDetails: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+    marginBottom: 4,
+  },
+  inviteHelp: {
+    fontSize: 12,
+    color: '#64748b',
+    lineHeight: 17,
+    marginBottom: 12,
+  },
+  inviteBtnRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  inviteAcceptBtn: {
+    flex: 1,
+    backgroundColor: '#4f46e5',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  inviteAcceptText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  inviteDeclineBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inviteDeclineText: {
+    color: '#64748b',
+    fontSize: 13,
+    fontWeight: '700',
+  },
 });
+

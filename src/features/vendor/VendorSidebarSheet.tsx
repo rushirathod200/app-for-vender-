@@ -23,13 +23,13 @@ const menuItems: Array<{
   subtitle: string;
 }> = [
   { key: 'dashboard', label: 'Dashboard', icon: 'grid-outline', subtitle: 'Overview and live stats' },
+  { key: 'analytics', label: 'Business Analytics', icon: 'trending-up-outline', subtitle: 'Demand, visitors, searches & insights' },
   { key: 'orders', label: 'Orders', icon: 'receipt-outline', subtitle: 'Check active and completed orders' },
   { key: 'products', label: 'Products', icon: 'cube-outline', subtitle: 'Manage live menu items' },
   { key: 'delivery', label: 'Delivery Boys', icon: 'bicycle-outline', subtitle: 'Manage delivery partners' },
   { key: 'wallet', label: 'Customer Top-up', icon: 'wallet-outline', subtitle: 'Add funds usable only at your store' },
   { key: 'manual', label: 'Manual Orders', icon: 'create-outline', subtitle: 'Add tea and coffee entry for offices' },
   { key: 'reports', label: 'Reports', icon: 'bar-chart-outline', subtitle: 'Pending office tea and coffee report' },
-  { key: 'referral', label: 'Refer & Earn', icon: 'people-outline', subtitle: 'Bring a shop, earn real money' },
   { key: 'profile', label: 'Vendor Profile', icon: 'person-outline', subtitle: 'Store details and settings' },
 ];
 
